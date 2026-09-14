@@ -1,0 +1,6 @@
+{
+  "name": "THREE MISTER Management System",
+  "description": "Aplikasi sistem manajemen dan akuntansi keuangan THREE MISTER terintegrasi Google Sheets, dilengkapi dashboard Accurate Online style, jurnal, neraca saldo, kalkulator HPP, dan laporan keuangan.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

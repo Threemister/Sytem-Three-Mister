@@ -1,0 +1,62 @@
+@import "tailwindcss";
+
+@theme {
+  --color-maroon: #580001;
+  --color-maroon-50: #fbf3f3;
+  --color-maroon-100: #f5e4e4;
+  --color-maroon-200: #eccbcb;
+  --color-maroon-700: #750507;
+  --color-maroon-800: #640203;
+  --color-maroon-900: #580001;
+  --color-maroon-950: #3a0001;
+  --font-sans: 'Plus Jakarta Sans', system-ui, -apple-system, sans-serif;
+  --font-mono: 'JetBrains Mono', monospace;
+}
+
+@layer base {
+  *, ::before, ::after {
+    box-sizing: border-box;
+  }
+
+  html, body {
+    max-width: 100%;
+    overflow-x: hidden;
+    font-family: var(--font-sans);
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
+  }
+
+  /* Otomatis rapi untuk teks paragraf: rata kanan-kiri (justify) dengan pencegahan overflow */
+  p {
+    text-align: justify;
+    text-align-last: left;
+    text-justify: inter-word;
+    overflow-wrap: break-word;
+    word-break: normal;
+  }
+
+  /* Override jika secara eksplisit dibutuhkan text-center / text-right / text-left */
+  p.text-center, .text-center > p {
+    text-align: center;
+    text-align-last: center;
+  }
+
+  p.text-right, .text-right > p {
+    text-align: right;
+    text-align-last: right;
+  }
+
+  p.text-left, .text-left > p {
+    text-align: left;
+    text-align-last: left;
+  }
+}
+
+/* Custom utility for no-scrollbar and overflow safety */
+.no-scrollbar::-webkit-scrollbar {
+  display: none;
+}
+.no-scrollbar {
+  -ms-overflow-style: none;
+  scrollbar-width: none;
+}
