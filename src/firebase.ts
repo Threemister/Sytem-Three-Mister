@@ -108,12 +108,31 @@ export const googleSignIn = async (): Promise<{ user: User; accessToken: string 
 
     return { user: result.user, accessToken: cachedAccessToken };
   } catch (error: any) {
-    console.error('Sign in error:', error);
+    if (
+      error?.code === 'auth/popup-closed-by-user' || 
+      error?.code === 'auth/cancelled-popup-request' ||
+      error?.message?.includes('popup-closed-by-user')
+    ) {
+      console.info('Google sign-in popup was closed by the user or cancelled.');
+      return null;
+    }
+
     if (error?.code === 'auth/popup-blocked' || error?.message?.includes('popup-blocked')) {
+      console.warn('Google sign-in popup was blocked by the browser.');
       const blockedError = new Error('auth/popup-blocked');
       (blockedError as any).code = 'auth/popup-blocked';
       throw blockedError;
     }
+
+    if (error?.code === 'auth/unauthorized-domain' || error?.message?.includes('unauthorized-domain')) {
+      console.warn('Firebase unauthorized domain detected:', error?.message);
+      const unauthorizedError = new Error('auth/unauthorized-domain');
+      (unauthorizedError as any).code = 'auth/unauthorized-domain';
+      (unauthorizedError as any).domain = typeof window !== 'undefined' ? window.location.hostname : '';
+      throw unauthorizedError;
+    }
+
+    console.warn('Google sign-in exception:', error?.message || error);
     throw error;
   } finally {
     isSigningIn = false;

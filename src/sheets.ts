@@ -44,7 +44,7 @@ async function makeRequest(
     } catch {
       // fallback to statusText
     }
-    console.error(`Google Sheets API Error [${response.status}]:`, errorDetail);
+    console.warn(`Google Sheets API Note [${response.status}]:`, errorDetail);
     if (response.status === 403 || response.status === 401) {
       if (typeof window !== 'undefined') {
         try {
@@ -378,7 +378,7 @@ export async function pushHPPToSheets(
       { values: rows }
     );
   } catch (err) {
-    console.error('Failed to push HPP to sheets:', err);
+    console.warn('Notice pushing HPP to sheets:', err);
   }
 }
 
@@ -460,7 +460,7 @@ export async function pushSummaryToSheets(
       { values: rows }
     );
   } catch (err) {
-    console.error('Failed to push financial summary to sheets:', err);
+    console.warn('Notice pushing financial summary to sheets:', err);
   }
 }
 

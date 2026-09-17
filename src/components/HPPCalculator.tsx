@@ -288,7 +288,7 @@ export default function HPPCalculator({ accounts, transactions, onAddTransaction
           return;
         }
       } catch (e) {
-        console.error(e);
+        console.warn('Notice loading HPP benchmarks:', e);
       }
     }
     // Set default industry benchmarks
