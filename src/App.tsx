@@ -104,17 +104,6 @@ export default function App() {
   const [domainCopied, setDomainCopied] = useState(false);
   const [isPullConfirmOpen, setIsPullConfirmOpen] = useState(false);
 
-  // Check if running inside iframe or standalone
-  const [isInIframe, setIsInIframe] = useState(false);
-
-  useEffect(() => {
-    try {
-      setIsInIframe(window.self !== window.top);
-    } catch {
-      setIsInIframe(true);
-    }
-  }, []);
-
   // Initial Load from localStorage or defaults
   useEffect(() => {
     // 1. Load Accounts
@@ -983,11 +972,11 @@ export default function App() {
               <div className="mx-auto w-14 h-14 bg-[#580001] rounded-2xl flex items-center justify-center shadow-lg border border-[#580001]/20">
                 <span className="text-white font-black text-xl tracking-tighter">3M</span>
               </div>
-              <div className="space-y-0.5">
-                <h1 className="text-xl font-black tracking-wider text-[#580001] uppercase">
+              <div className="space-y-0.5 text-center flex flex-col items-center justify-center">
+                <h1 className="text-xl font-black tracking-wider text-[#580001] uppercase text-center">
                   THREE MISTER
                 </h1>
-                <p className="text-[11px] font-bold tracking-widest text-slate-500 uppercase">
+                <p className="text-[11px] font-bold tracking-widest text-slate-500 uppercase text-center w-full block">
                   MANAGEMENT SYSTEM
                 </p>
               </div>
@@ -1210,19 +1199,6 @@ export default function App() {
               <CheckCircle2 className="w-3.5 h-3.5 text-emerald-600" />
               <span>Masuk Mode Demo Offline (Tanpa Login Google)</span>
             </button>
-
-            {/* Helper link for iframe users */}
-            <div className="pt-1 text-center">
-              <a
-                href={window.location.href}
-                target="_blank"
-                rel="noopener noreferrer"
-                className="inline-flex items-center gap-1.5 text-[11px] text-slate-500 hover:text-[#580001] font-medium transition"
-              >
-                <ExternalLink className="w-3 h-3" />
-                <span>Buka di Tab Baru ↗ untuk Akses Bebas Frame</span>
-              </a>
-            </div>
           </div>
         </div>
       </div>
@@ -1458,25 +1434,6 @@ export default function App() {
         </nav>
 
         {/* Quick Info inside Drawer */}
-        {isInIframe && (
-          <div className="bg-amber-50 text-amber-900 p-3 rounded-xl border border-amber-200 space-y-1.5 mb-2 text-left">
-            <div className="flex items-center gap-1.5 font-bold text-[11px] text-amber-950">
-              <ExternalLink className="w-3.5 h-3.5 text-amber-700" />
-              <span>Akses Bebas Frame</span>
-            </div>
-            <p className="text-[10px] leading-relaxed text-amber-800">
-              Buka aplikasi langsung di tab browser tersendiri tanpa batasan sandbox frame.
-            </p>
-            <a
-              href={window.location.href}
-              target="_blank"
-              rel="noopener noreferrer"
-              className="inline-flex items-center justify-center w-full py-1.5 px-3 bg-[#580001] hover:bg-[#730002] text-white text-[11px] font-bold rounded-lg transition cursor-pointer"
-            >
-              Buka di Tab Baru ↗
-            </a>
-          </div>
-        )}
         <div className="mt-auto bg-slate-50 text-slate-600 p-4 rounded-xl border border-slate-200 space-y-1.5">
           <span className="inline-flex items-center gap-1.5 bg-[#580001]/10 text-[#580001] font-bold text-[9px] uppercase tracking-wider px-2 py-0.5 rounded">
             Double Entry Ledger
@@ -1540,21 +1497,6 @@ export default function App() {
 
           {/* Right Area: Clock, Notification & User Badge */}
           <div className="flex items-center gap-2 sm:gap-3 shrink-0">
-            {/* Akses Bebas Frame button when running inside iframe */}
-            {isInIframe && (
-              <a
-                href={window.location.href}
-                target="_blank"
-                rel="noopener noreferrer"
-                className="inline-flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg bg-amber-50 hover:bg-amber-100 text-amber-900 border border-amber-300 text-xs font-semibold transition shadow-2xs shrink-0 cursor-pointer"
-                title="Aplikasi berjalan di dalam iframe pratinjau. Klik untuk membuka di tab baru browser (Akses Bebas Frame) agar login Google dan download berfungsi maksimal."
-              >
-                <ExternalLink className="w-3.5 h-3.5 text-amber-700" />
-                <span className="hidden sm:inline">Akses Bebas Frame ↗</span>
-                <span className="sm:hidden">Tab Baru ↗</span>
-              </a>
-            )}
-
             {/* Live Clock Component */}
             <div className="hidden lg:block">
               <Clock />

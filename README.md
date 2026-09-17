@@ -4,16 +4,6 @@ Aplikasi sistem manajemen operasional dan akuntansi keuangan **THREE MISTER**, t
 
 ---
 
-## 🪟 Akses Bebas Frame (Standalone vs Iframe)
-
-### Apa itu Akses Bebas Frame?
-- **Di dalam Frame (Iframe Preview)**: Saat aplikasi dibuka di panel pratinjau (misalnya di Google AI Studio), aplikasi berjalan di dalam `<iframe>` yang memiliki kebijakan keamanan ketat (*sandboxed*). Hal ini dapat membatasi jendela pop-up otorisasi akun Google (Google Sign-In) atau download file langsung.
-- **Akses Bebas Frame**: Berarti aplikasi dibuka langsung di tab/jendela browser tersendiri tanpa pembungkus frame. Fitur seperti Google Sign-In pop-up, unduh PDF, dan penyimpanan offline berjalan 100% tanpa hambatan.
-- **Deploy GitHub Pages**: Saat Anda men-deploy ke GitHub Pages (`https://USERNAME.github.io/NAMA-REPO/`), aplikasi **secara otomatis berjalan dalam Akses Bebas Frame penuh**.
-- Di dalam aplikasi, tombol **"Akses Bebas Frame ↗"** akan otomatis muncul di bagian header atas dan menu navigasi apabila aplikasi mendeteksi sedang dijalankan di dalam lingkungan frame.
-
----
-
 ## 🔐 Solusi Error: `Firebase: Error (auth/unauthorized-domain)`
 
 Jika Anda melihat pesan error:
