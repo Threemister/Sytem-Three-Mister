@@ -51,9 +51,7 @@ import {
   FileText,
   Eye,
   EyeOff,
-  ExternalLink,
-  Globe,
-  Copy
+  ExternalLink
 } from 'lucide-react';
 import {
   ResponsiveContainer,
@@ -121,7 +119,6 @@ export default function AdminDashboard({
 }: AdminDashboardProps) {
   const [showConfig, setShowConfig] = useState(false);
   const [tempId, setTempId] = useState(spreadsheetId);
-  const [domainCopied, setDomainCopied] = useState(false);
   const [isDeleteConfirmOpen, setIsDeleteConfirmOpen] = useState(false);
   const [deleteTarget, setDeleteTarget] = useState<{ id: string; description: string; amount: number } | null>(null);
 
@@ -1722,81 +1719,7 @@ export default function AdminDashboard({
                   <p className="font-bold text-rose-900">Otorisasi / Sinkronisasi Terkendala</p>
                   <p className="mt-0.5 text-rose-700 leading-relaxed">{syncError}</p>
                 </div>
-
-                {(syncError.includes('unauthorized-domain') || syncError.includes('belum diizinkan') || syncError.includes('belum terdaftar')) && (
-                  <div className="pt-2 space-y-2.5">
-                    {/* Domain card with copy button */}
-                    <div className="bg-white rounded-lg p-2.5 border border-rose-200 flex items-center justify-between gap-2">
-                      <div className="min-w-0 flex-1">
-                        <span className="text-[10px] text-slate-500 font-semibold uppercase">Domain Saat Ini:</span>
-                        <div className="font-mono text-xs font-bold text-slate-900 truncate">
-                          {typeof window !== 'undefined' ? window.location.hostname : ''}
-                        </div>
-                      </div>
-                      <button
-                        type="button"
-                        onClick={() => {
-                          if (navigator.clipboard) {
-                            navigator.clipboard.writeText(window.location.hostname);
-                            setDomainCopied(true);
-                            setTimeout(() => setDomainCopied(false), 3000);
-                          }
-                        }}
-                        className="inline-flex items-center gap-1.5 px-3 py-1.5 bg-rose-100 hover:bg-rose-200 text-rose-900 text-xs font-semibold rounded-lg transition cursor-pointer shrink-0"
-                      >
-                        {domainCopied ? (
-                          <>
-                            <Check className="w-3.5 h-3.5 text-emerald-600" />
-                            <span>Tersalin!</span>
-                          </>
-                        ) : (
-                          <>
-                            <Copy className="w-3.5 h-3.5" />
-                            <span>Salin Domain</span>
-                          </>
-                        )}
-                      </button>
-                    </div>
-
-                    <div className="bg-white/80 p-3 rounded-lg border border-rose-200/70 text-[11px] text-slate-700 space-y-1">
-                      <p className="font-bold text-slate-900 flex items-center gap-1.5">
-                        <Globe className="w-3.5 h-3.5 text-rose-700" />
-                        <span>Cara Mengaktifkan di Firebase Console:</span>
-                      </p>
-                      <ol className="list-decimal list-inside space-y-1 text-slate-600 pl-1">
-                        <li>
-                          Buka{' '}
-                          <a
-                            href="https://console.firebase.google.com/project/gen-lang-client-0924079852/authentication/settings"
-                            target="_blank"
-                            rel="noopener noreferrer"
-                            className="font-bold text-[#580001] underline hover:text-red-800"
-                          >
-                            Firebase Authentication Settings ↗
-                          </a>
-                        </li>
-                        <li>
-                          Cari bagian <strong>Authorized domains</strong> lalu klik tombol <strong>Add domain</strong>.
-                        </li>
-                        <li>
-                          Tempel domain Anda (atau <code className="bg-slate-100 px-1 py-0.5 rounded font-mono font-bold text-rose-900">github.io</code>) lalu klik <strong>Save</strong>.
-                        </li>
-                      </ol>
-                    </div>
-
-                    <div className="pt-1 flex flex-wrap items-center gap-2">
-                      <button
-                        onClick={onGoogleSignIn}
-                        className="inline-flex items-center gap-1.5 bg-[#580001] hover:bg-[#730002] text-white px-3.5 py-1.5 rounded-lg text-xs font-semibold shadow-xs transition cursor-pointer"
-                      >
-                        <UserCheck className="w-3.5 h-3.5" />
-                        <span>Coba Hubungkan Ulang</span>
-                      </button>
-                    </div>
-                  </div>
-                )}
-
-                {(syncError.includes('401') || syncError.includes('kedaluwarsa') || syncError.includes('credentials') || syncError.includes('Izin Google Sheets')) && !syncError.includes('unauthorized-domain') && (
+                {(syncError.includes('401') || syncError.includes('kedaluwarsa') || syncError.includes('credentials') || syncError.includes('Izin Google Sheets')) && (
                   <div className="pt-2 flex flex-wrap items-center gap-2.5">
                     <button
                       onClick={onGoogleSignIn}
