@@ -62,6 +62,8 @@ import {
 
 type Screen = 'dashboard' | 'akun' | 'transaksi' | 'jurnal' | 'neraca-saldo' | 'laporan' | 'hpp';
 
+export const LOGO_URL = 'https://dffpatvdcpujtntwuyly.supabase.co/storage/v1/object/public/Sytem%20Three%20Mister/Submark%20Secondary%20Logo%203mr%20(White%20Background).png';
+
 export default function App() {
   const [currentScreen, setCurrentScreen] = useState<Screen>('dashboard');
   const [isDrawerOpen, setIsDrawerOpen] = useState(false);
@@ -946,8 +948,12 @@ export default function App() {
     return (
       <div className="min-h-screen bg-slate-50 flex items-center justify-center p-6 text-center text-slate-800">
         <div className="space-y-5 max-w-sm bg-white p-8 rounded-2xl border border-slate-200 shadow-sm">
-          <div className="relative mx-auto w-14 h-14 bg-[#580001] rounded-2xl flex items-center justify-center shadow-md">
-            <span className="text-white font-black text-xl tracking-tighter">3M</span>
+          <div className="relative mx-auto w-16 h-16 bg-white rounded-2xl flex items-center justify-center shadow-md border border-slate-200 p-1.5 overflow-hidden">
+            <img
+              src={LOGO_URL}
+              alt="THREE MISTER Logo"
+              className="w-full h-full object-contain rounded-xl"
+            />
           </div>
           <div className="space-y-1.5">
             <h2 className="text-sm font-bold tracking-widest text-[#580001] uppercase">THREE MISTER</h2>
@@ -969,8 +975,12 @@ export default function App() {
           <div className="space-y-6">
             {/* Header / Logo */}
             <div className="text-center space-y-3">
-              <div className="mx-auto w-14 h-14 bg-[#580001] rounded-2xl flex items-center justify-center shadow-lg border border-[#580001]/20">
-                <span className="text-white font-black text-xl tracking-tighter">3M</span>
+              <div className="mx-auto w-20 h-20 bg-white rounded-2xl flex items-center justify-center shadow-lg border border-slate-200 p-2 overflow-hidden">
+                <img
+                  src={LOGO_URL}
+                  alt="THREE MISTER Logo"
+                  className="w-full h-full object-contain rounded-xl"
+                />
               </div>
               <div className="space-y-0.5 text-center flex flex-col items-center justify-center">
                 <h1 className="text-xl font-black tracking-wider text-[#580001] uppercase text-center">
@@ -1216,11 +1226,15 @@ export default function App() {
         <div className="flex flex-col items-center gap-4 w-full">
           <button
             onClick={() => setCurrentScreen('dashboard')}
-            className="w-10 h-10 bg-[#580001] rounded-xl flex items-center justify-center text-white font-black text-sm tracking-tighter shadow-sm hover:bg-[#730002] transition cursor-pointer"
+            className="w-11 h-11 bg-white rounded-xl flex items-center justify-center shadow-xs border border-slate-200 p-1.5 hover:border-[#580001] transition cursor-pointer overflow-hidden group"
             title="THREE MISTER - Kembali ke Dashboard"
             aria-label="Dashboard THREE MISTER"
           >
-            3M
+            <img
+              src={LOGO_URL}
+              alt="THREE MISTER Logo"
+              className="w-full h-full object-contain rounded-lg group-hover:scale-105 transition-transform"
+            />
           </button>
           
           <div className="w-8 h-px bg-slate-200/80" />
@@ -1305,8 +1319,12 @@ export default function App() {
       }`}>
         <div className="flex items-center justify-between pb-5 mb-6 border-b border-slate-100">
           <div className="flex items-center gap-2.5">
-            <div className="bg-[#580001] p-2 rounded-xl flex items-center justify-center shadow-md">
-              <span className="text-white font-black text-sm tracking-tighter">3M</span>
+            <div className="bg-white p-1 rounded-xl flex items-center justify-center shadow-xs border border-slate-200 w-10 h-10 overflow-hidden shrink-0">
+              <img
+                src={LOGO_URL}
+                alt="THREE MISTER Logo"
+                className="w-full h-full object-contain rounded-lg"
+              />
             </div>
             <div>
               <h2 className="text-xs font-black tracking-wide text-[#580001] uppercase">THREE MISTER</h2>
@@ -1459,8 +1477,12 @@ export default function App() {
 
             {/* Brand Logo & Monogram */}
             <div className="flex items-center gap-2.5 shrink-0">
-              <div className="w-9 h-9 bg-[#580001] rounded-xl flex items-center justify-center shadow-xs text-white font-black text-base tracking-tighter">
-                3M
+              <div className="w-10 h-10 bg-white rounded-xl flex items-center justify-center shadow-xs border border-slate-200 p-1 overflow-hidden shrink-0">
+                <img
+                  src={LOGO_URL}
+                  alt="THREE MISTER Logo"
+                  className="w-full h-full object-contain rounded-lg"
+                />
               </div>
               <div className="min-w-0">
                 <div className="flex items-center gap-2">
