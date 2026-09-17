@@ -1719,6 +1719,23 @@ export default function AdminDashboard({
                   <p className="font-bold text-rose-900">Otorisasi / Sinkronisasi Terkendala</p>
                   <p className="mt-0.5 text-rose-700 leading-relaxed">{syncError}</p>
                 </div>
+                {(syncError.includes('401') || syncError.includes('kedaluwarsa') || syncError.includes('credentials') || syncError.includes('Izin Google Sheets')) && (
+                  <div className="pt-2 flex flex-wrap items-center gap-2.5">
+                    <button
+                      onClick={onGoogleSignIn}
+                      className="inline-flex items-center gap-1.5 bg-[#580001] hover:bg-[#730002] text-white px-3.5 py-1.5 rounded-lg text-xs font-semibold shadow-xs transition cursor-pointer"
+                    >
+                      <UserCheck className="w-3.5 h-3.5" />
+                      <span>Hubungkan Ulang Akun Google (Login)</span>
+                    </button>
+                    <button
+                      onClick={onGoogleSignOut}
+                      className="inline-flex items-center gap-1.5 bg-white hover:bg-slate-100 border border-slate-300 text-slate-700 px-3 py-1.5 rounded-lg text-xs font-semibold transition cursor-pointer"
+                    >
+                      <span>Masuk Mode Offline / Demo</span>
+                    </button>
+                  </div>
+                )}
                 {(syncError.includes('popup-blocked') || syncError.includes('Pop-up') || syncError.includes('pop-up')) && (
                   <div className="pt-1.5 flex flex-wrap items-center gap-2.5">
                     <a

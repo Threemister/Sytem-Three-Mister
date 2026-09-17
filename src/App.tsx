@@ -6,7 +6,7 @@
 import { useState, useEffect, useRef } from 'react';
 import { Account, Transaction, FinanceNotification, SavedCalculation, FinancialSummaryData } from './types';
 import { defaultAccounts, defaultTransactions } from './defaultData';
-import { initAuth, googleSignIn, logout, getAccessToken } from './firebase';
+import { initAuth, googleSignIn, logout, getAccessToken, clearExpiredToken } from './firebase';
 import { 
   createNewSpreadsheet,
   ensureSheetsExist, 
@@ -200,14 +200,35 @@ export default function App() {
 
     // 6. Cross-tab storage listener for auth token
     const handleStorage = (event: StorageEvent) => {
-      if (event.key === 'threemister_oauth_token' && event.newValue) {
-        setOauthToken(event.newValue);
-        setPopupBlocked(false);
-        setSyncError(null);
+      if (event.key === 'threemister_oauth_token') {
+        if (event.newValue) {
+          setOauthToken(event.newValue);
+          setPopupBlocked(false);
+          setSyncError(null);
+        } else {
+          setOauthToken(null);
+        }
       }
     };
     window.addEventListener('storage', handleStorage);
-    return () => window.removeEventListener('storage', handleStorage);
+
+    // 7. Handle Google OAuth token expiration
+    const handleAuthExpired = () => {
+      clearExpiredToken();
+      setOauthToken(null);
+      setSyncError('Sesi login Google telah kedaluwarsa (401). Silakan hubungkan ulang akun Google Anda.');
+      addNotification(
+        'Sesi Google Kedaluwarsa',
+        'Token otorisasi Google Sheets telah habis. Silakan klik Login Ulang dengan Google pada menu Dashboard / Pengaturan.',
+        'warning'
+      );
+    };
+    window.addEventListener('google_auth_expired', handleAuthExpired);
+
+    return () => {
+      window.removeEventListener('storage', handleStorage);
+      window.removeEventListener('google_auth_expired', handleAuthExpired);
+    };
   }, []);
 
   // Save to localStorage when state changes
@@ -501,8 +522,10 @@ export default function App() {
         setSyncError(null);
       } catch (err: any) {
         console.warn('Auto-sync to sheets note:', err.message);
-        if (err.message?.includes('403') || err.message?.includes('401')) {
-          setSyncError('Izin sesi Google Sheets telah kedaluwarsa. Silakan lakukan otorisasi ulang.');
+        if (err.message?.includes('403') || err.message?.includes('401') || err.message?.includes('Izin Google Sheets')) {
+          clearExpiredToken();
+          setOauthToken(null);
+          setSyncError('Sesi Google Sheets telah kedaluwarsa (401). Silakan hubungkan ulang akun Google Anda.');
         }
       } finally {
         setIsSyncing(false);
@@ -738,8 +761,15 @@ export default function App() {
         'success'
       );
     } catch (err: any) {
-      setSyncError(`Gagal membuat Google Sheet otomatis: ${err.message}`);
-      addNotification('Gagal Buat Sheet', err.message, 'danger');
+      if (err?.message?.includes('401') || err?.message?.includes('403') || err?.message?.includes('Izin Google Sheets')) {
+        clearExpiredToken();
+        setOauthToken(null);
+        setSyncError('Sesi Google Sheets telah kedaluwarsa (401). Silakan klik tombol "Hubungkan Ulang Google" untuk memperbarui izin.');
+        addNotification('Sesi Google Kedaluwarsa', 'Token akses Google Anda telah kedaluwarsa. Silakan login ulang.', 'warning');
+      } else {
+        setSyncError(`Gagal membuat Google Sheet otomatis: ${err.message}`);
+        addNotification('Gagal Buat Sheet', err.message, 'danger');
+      }
     } finally {
       setIsSyncing(false);
     }
@@ -766,7 +796,14 @@ export default function App() {
         'success'
       );
     } catch (err: any) {
-      setSyncError(`Inisialisasi lembar kerja gagal: ${err.message}`);
+      if (err?.message?.includes('401') || err?.message?.includes('403') || err?.message?.includes('Izin Google Sheets')) {
+        clearExpiredToken();
+        setOauthToken(null);
+        setSyncError('Sesi Google Sheets telah kedaluwarsa (401). Silakan login ulang dengan akun Google Anda.');
+        addNotification('Sesi Google Kedaluwarsa', 'Token Google telah kedaluwarsa. Silakan hubungkan ulang akun Google.', 'warning');
+      } else {
+        setSyncError(`Inisialisasi lembar kerja gagal: ${err.message}`);
+      }
     } finally {
       setIsSyncing(false);
     }
@@ -799,8 +836,15 @@ export default function App() {
         'success'
       );
     } catch (err: any) {
-      setSyncError(`Gagal menyimpan data ke Google Sheets: ${err.message}`);
-      addNotification('Gagal Simpan Data', err.message, 'danger');
+      if (err?.message?.includes('401') || err?.message?.includes('403') || err?.message?.includes('Izin Google Sheets')) {
+        clearExpiredToken();
+        setOauthToken(null);
+        setSyncError('Sesi Google Sheets telah kedaluwarsa (401). Silakan login ulang dengan akun Google Anda.');
+        addNotification('Sesi Google Kedaluwarsa', 'Token Google telah habis masa berlakunya. Silakan hubungkan ulang akun Google.', 'warning');
+      } else {
+        setSyncError(`Gagal menyimpan data ke Google Sheets: ${err.message}`);
+        addNotification('Gagal Simpan Data', err.message, 'danger');
+      }
     } finally {
       setIsSyncing(false);
     }
@@ -851,8 +895,15 @@ export default function App() {
         'success'
       );
     } catch (err: any) {
-      setSyncError(`Gagal mengunduh data dari Google Sheets: ${err.message}`);
-      addNotification('Gagal Unduh Data', err.message, 'danger');
+      if (err?.message?.includes('401') || err?.message?.includes('403') || err?.message?.includes('Izin Google Sheets')) {
+        clearExpiredToken();
+        setOauthToken(null);
+        setSyncError('Sesi Google Sheets telah kedaluwarsa (401). Silakan login ulang dengan akun Google Anda.');
+        addNotification('Sesi Google Kedaluwarsa', 'Token akses Google Anda telah kedaluwarsa. Silakan hubungkan ulang akun Google.', 'warning');
+      } else {
+        setSyncError(`Gagal mengunduh data dari Google Sheets: ${err.message}`);
+        addNotification('Gagal Unduh Data', err.message, 'danger');
+      }
     } finally {
       setIsSyncing(false);
     }

@@ -27,7 +27,8 @@ import {
   exportProfitLossPDF, 
   exportBalanceSheetPDF, 
   exportCashFlowPDF, 
-  exportCompleteFinancialReportPDF 
+  exportCompleteFinancialReportPDF,
+  exportFinancialSummaryPDF
 } from '../utils/pdfExport';
 import { 
   ResponsiveContainer, 
@@ -382,6 +383,35 @@ export default function Reports({ accounts, transactions }: ReportsProps) {
     triggerPdfToast('Laporan Neraca Keuangan PDF berhasil diunduh.');
   };
 
+  const handleDownloadFinancialSummaryPDF = () => {
+    exportFinancialSummaryPDF({
+      periodText: getPeriodText(),
+      profitLoss: {
+        periodText: getPeriodText(),
+        revenueList,
+        hppList,
+        opexList,
+        totalRevenue,
+        totalHPP,
+        labaKotor,
+        totalOPEX,
+        netProfit,
+      },
+      balanceSheet: {
+        periodText: getPeriodText(),
+        assetList,
+        liabilityList,
+        equityList,
+        totalAssets,
+        totalLiabilities,
+        totalEquityBeforeProfit,
+        netProfit,
+        totalEquity,
+      },
+    });
+    triggerPdfToast('Ringkasan Keuangan (Laba Rugi & Neraca) PDF berhasil diunduh.');
+  };
+
   const handleDownloadCashFlowPDF = () => {
     exportCashFlowPDF({
       periodText: getPeriodText(),
@@ -511,6 +541,17 @@ export default function Reports({ accounts, transactions }: ReportsProps) {
             Cetak Laporan
           </button>
 
+          {/* Dedicated Download PDF Button for Financial Summary (Laba Rugi & Neraca) */}
+          <button
+            id="download-summary-pdf-btn"
+            onClick={handleDownloadFinancialSummaryPDF}
+            className="inline-flex items-center gap-1.5 bg-white hover:bg-slate-50 border border-emerald-300 text-emerald-800 text-xs font-semibold px-3.5 py-2 rounded-xl transition shadow-2xs hover:border-emerald-400 cursor-pointer"
+            title="Unduh Ringkasan Keuangan (Laba Rugi & Neraca) PDF Siap Cetak"
+          >
+            <FileDown className="w-4 h-4 text-emerald-600" />
+            <span>Download PDF Ringkasan</span>
+          </button>
+
           {/* Unduh Dokumen PDF Dropdown */}
           <div className="relative">
             <button
@@ -529,12 +570,32 @@ export default function Reports({ accounts, transactions }: ReportsProps) {
                   className="fixed inset-0 z-20" 
                   onClick={() => setIsPdfDropdownOpen(false)}
                 />
-                <div className="absolute right-0 mt-2 w-72 bg-white rounded-2xl shadow-xl border border-slate-150 p-2 z-30 space-y-1 text-xs">
+                <div className="absolute right-0 mt-2 w-76 bg-white rounded-2xl shadow-xl border border-slate-150 p-2 z-30 space-y-1 text-xs">
                   <div className="px-3 py-2 text-[11px] font-bold tracking-wider text-slate-400 uppercase border-b border-slate-100 flex items-center justify-between">
                     <span>Format PDF (jsPDF)</span>
                     <span className="text-[10px] text-emerald-600 font-semibold bg-emerald-50 px-1.5 py-0.5 rounded">Rapi & Siap Cetak</span>
                   </div>
                   
+                  {/* Executive Summary Button (Laba Rugi & Neraca) */}
+                  <button
+                    onClick={() => {
+                      handleDownloadFinancialSummaryPDF();
+                      setIsPdfDropdownOpen(false);
+                    }}
+                    className="w-full flex items-center gap-2.5 px-3 py-2 rounded-xl bg-amber-50/70 hover:bg-amber-100/80 text-amber-950 font-medium transition text-left cursor-pointer border border-amber-200/60"
+                  >
+                    <FileDown className="w-4 h-4 text-[#580001] shrink-0" />
+                    <div>
+                      <div className="font-bold text-slate-900 flex items-center gap-1.5">
+                        <span>Ringkasan (Laba Rugi & Neraca)</span>
+                        <span className="text-[9px] bg-[#580001] text-white px-1.5 py-0.2 rounded font-semibold">Dokumen Resmi</span>
+                      </div>
+                      <div className="text-[10px] text-slate-500">Ikhtisar gabungan Laba Rugi & Posisi Neraca dalam 1 lembar</div>
+                    </div>
+                  </button>
+
+                  <div className="border-t border-slate-100 my-1"></div>
+
                   <button
                     onClick={() => {
                       handleDownloadProfitLossPDF();
@@ -678,16 +739,24 @@ export default function Reports({ accounts, transactions }: ReportsProps) {
                 <h3 className="font-bold text-slate-800 text-lg">Laporan Laba Rugi (Income Statement)</h3>
                 <p className="text-slate-500 text-xs mt-0.5">Memantau total omset, HPP, beban operasional, dan laba bersih usaha clothing brand Anda.</p>
               </div>
-              <div className="flex items-center gap-3">
+              <div className="flex flex-wrap items-center gap-2">
                 <button
                   onClick={handleDownloadProfitLossPDF}
-                  className="inline-flex items-center gap-1.5 px-3.5 py-2 bg-emerald-50 hover:bg-emerald-100 border border-emerald-200 text-emerald-800 text-xs font-semibold rounded-xl transition cursor-pointer shadow-2xs"
+                  className="inline-flex items-center gap-1.5 px-3 py-1.5 bg-emerald-50 hover:bg-emerald-100 border border-emerald-200 text-emerald-800 text-xs font-semibold rounded-xl transition cursor-pointer shadow-2xs"
                   title="Unduh Salinan PDF Laba Rugi Resmi"
                 >
-                  <FileDown className="w-4 h-4 text-emerald-600" />
-                  <span>Unduh PDF Laba Rugi</span>
+                  <FileDown className="w-3.5 h-3.5 text-emerald-600" />
+                  <span>PDF Laba Rugi</span>
                 </button>
-                <div className="text-slate-400 text-xs italic hidden sm:block">
+                <button
+                  onClick={handleDownloadFinancialSummaryPDF}
+                  className="inline-flex items-center gap-1.5 px-3 py-1.5 bg-[#580001]/5 hover:bg-[#580001]/10 border border-[#580001]/20 text-[#580001] text-xs font-semibold rounded-xl transition cursor-pointer shadow-2xs"
+                  title="Unduh Ringkasan Keuangan (Laba Rugi & Neraca)"
+                >
+                  <FileDown className="w-3.5 h-3.5 text-[#580001]" />
+                  <span>PDF Ringkasan (Laba Rugi & Neraca)</span>
+                </button>
+                <div className="text-slate-400 text-xs italic hidden sm:block ml-1">
                   Standar Akuntansi PSAK SAK-EMKM
                 </div>
               </div>
@@ -904,16 +973,24 @@ export default function Reports({ accounts, transactions }: ReportsProps) {
                 <h3 className="font-bold text-slate-800 text-lg">Neraca Keuangan (Balance Sheet)</h3>
                 <p className="text-slate-500 text-xs mt-0.5">Memantau posisi kekayaan bersih, rincian aset, utang, dan ekuitas modal.</p>
               </div>
-              <div className="flex items-center gap-3">
+              <div className="flex flex-wrap items-center gap-2">
                 <button
                   onClick={handleDownloadBalanceSheetPDF}
-                  className="inline-flex items-center gap-1.5 px-3.5 py-2 bg-blue-50 hover:bg-blue-100 border border-blue-200 text-blue-800 text-xs font-semibold rounded-xl transition cursor-pointer shadow-2xs"
+                  className="inline-flex items-center gap-1.5 px-3 py-1.5 bg-blue-50 hover:bg-blue-100 border border-blue-200 text-blue-800 text-xs font-semibold rounded-xl transition cursor-pointer shadow-2xs"
                   title="Unduh Salinan PDF Neraca Resmi"
                 >
-                  <FileDown className="w-4 h-4 text-blue-600" />
-                  <span>Unduh PDF Neraca</span>
+                  <FileDown className="w-3.5 h-3.5 text-blue-600" />
+                  <span>PDF Neraca</span>
                 </button>
-                <div className="text-slate-400 text-xs italic hidden sm:block">
+                <button
+                  onClick={handleDownloadFinancialSummaryPDF}
+                  className="inline-flex items-center gap-1.5 px-3 py-1.5 bg-[#580001]/5 hover:bg-[#580001]/10 border border-[#580001]/20 text-[#580001] text-xs font-semibold rounded-xl transition cursor-pointer shadow-2xs"
+                  title="Unduh Ringkasan Keuangan (Laba Rugi & Neraca)"
+                >
+                  <FileDown className="w-3.5 h-3.5 text-[#580001]" />
+                  <span>PDF Ringkasan (Laba Rugi & Neraca)</span>
+                </button>
+                <div className="text-slate-400 text-xs italic hidden sm:block ml-1">
                   Aktiva = Kewajiban + Modal
                 </div>
               </div>

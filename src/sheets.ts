@@ -46,6 +46,14 @@ async function makeRequest(
     }
     console.error(`Google Sheets API Error [${response.status}]:`, errorDetail);
     if (response.status === 403 || response.status === 401) {
+      if (typeof window !== 'undefined') {
+        try {
+          localStorage.removeItem('threemister_oauth_token');
+        } catch {}
+        window.dispatchEvent(new CustomEvent('google_auth_expired', {
+          detail: { status: response.status, message: errorDetail }
+        }));
+      }
       throw new Error(`Izin Google Sheets (${response.status}): ${errorDetail}. Silakan keluar dan login ulang dengan akun Google Anda.`);
     }
     throw new Error(`Google Sheets API Error [${response.status}]: ${errorDetail}`);
@@ -259,8 +267,11 @@ export async function pullAccountsFromSheets(
         description: row[5] || ''
       };
     }).filter((acc: Account) => acc.code && acc.name);
-  } catch (err) {
-    console.error('Failed to pull accounts:', err);
+  } catch (err: any) {
+    if (err?.message?.includes('401') || err?.message?.includes('403') || err?.message?.includes('Izin Google Sheets')) {
+      throw err;
+    }
+    console.warn('Notice when pulling accounts from sheets:', err);
     return [];
   }
 }
@@ -317,8 +328,11 @@ export async function pullTransactionsFromSheets(
       amount: parseFloat(row[6]) || 0,
       createdAt: row[7] || ''
     })).filter((trx: Transaction) => trx.id && trx.debitAccount && trx.creditAccount);
-  } catch (err) {
-    console.error('Failed to pull transactions:', err);
+  } catch (err: any) {
+    if (err?.message?.includes('401') || err?.message?.includes('403') || err?.message?.includes('Izin Google Sheets')) {
+      throw err;
+    }
+    console.warn('Notice when pulling transactions from sheets:', err);
     return [];
   }
 }
@@ -403,8 +417,11 @@ export async function pullHPPFromSheets(
         createdAt: row[17] || ''
       };
     }).filter((c: SavedCalculation) => c.productName && c.hppPerPiece > 0);
-  } catch (err) {
-    console.error('Failed to pull HPP from sheets:', err);
+  } catch (err: any) {
+    if (err?.message?.includes('401') || err?.message?.includes('403') || err?.message?.includes('Izin Google Sheets')) {
+      throw err;
+    }
+    console.warn('Notice when pulling HPP from sheets:', err);
     return [];
   }
 }
