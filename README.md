@@ -21,26 +21,28 @@ Firebase Authentication memiliki fitur keamanan bernama **Authorized Domains (Do
    👉 [https://console.firebase.google.com/project/gen-lang-client-0924079852/authentication/settings](https://console.firebase.google.com/project/gen-lang-client-0924079852/authentication/settings)
 2. Klik tab **Authorized domains** (Domain yang diotorisasi).
 3. Klik tombol **Add domain** (Tambah domain).
-4. Masukkan domain deployment GitHub Pages Anda:
-   - Ketik: **`threemister.github.io`** (atau cukup **`github.io`**).
+4. Masukkan domain deployment Anda:
+   - Jika menggunakan **GitHub Pages**: Masukkan `github.io` (ini otomatis mengizinkan seluruh repository GitHub Pages Anda), atau masukkan subdomain spesifik Anda misalnya `ersgroup2002.github.io`.
+   - Jika menggunakan **Domain Kustom**: Masukkan nama domain Anda, misalnya `akuntansi.threemister.com`.
 5. Klik **Save** (Simpan).
-6. Buka kembali aplikasi di [https://threemister.github.io/Sytem-Three-Mister/](https://threemister.github.io/Sytem-Three-Mister/) dan klik **Masuk Dengan Google**. Login dan integrasi Google Sheets langsung aktif 100%!
+6. Kembali ke aplikasi dan klik **Masuk Dengan Google**. Login dan integrasi Google Sheets akan langsung berhasil 100%!
 
 > 💡 **Tip:** Anda juga dapat langsung mengklik tombol **"Masuk Mode Demo Offline"** pada halaman login kapan saja untuk menggunakan seluruh fitur pencatatan, kalkulator HPP, jurnal, neraca saldo, dan cetak PDF tanpa terhambat otorisasi awan.
 
 ---
 
-## 🚀 Panduan Push ke GitHub Pages (threemister/Sytem-Three-Mister)
+## 🚀 Panduan Deployment ke GitHub Pages
 
 Aplikasi ini telah dilengkapi alur kerja otomatis `.github/workflows/static.yml` dan konfigurasi Vite `base: './'`.
 
-### Perintah Push Pembaruan:
-Di terminal proyek ini:
-```bash
-git remote add origin https://github.com/threemister/Sytem-Three-Mister.git
-git branch -M main
-git push -u origin main
-```
+### Langkah-langkah:
+1. Buat repository baru di akun GitHub Anda (misalnya `three-mister-accounting`).
+2. Di terminal komputer Anda, hubungkan dan push repositori ini:
+   ```bash
+   git remote add origin https://github.com/USERNAME/NAMA-REPO.git
+   git branch -M main
+   git push -u origin main
+   ```
 3. Di halaman repository GitHub Anda:
    - Masuk ke **Settings** > **Pages**.
    - Pada bagian **Build and deployment > Source**, pilih **GitHub Actions**.
