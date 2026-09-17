@@ -114,12 +114,6 @@ export const googleSignIn = async (): Promise<{ user: User; accessToken: string 
       (blockedError as any).code = 'auth/popup-blocked';
       throw blockedError;
     }
-    if (error?.code === 'auth/unauthorized-domain' || error?.message?.includes('unauthorized-domain')) {
-      const unauthorizedError = new Error('auth/unauthorized-domain');
-      (unauthorizedError as any).code = 'auth/unauthorized-domain';
-      (unauthorizedError as any).domain = typeof window !== 'undefined' ? window.location.hostname : '';
-      throw unauthorizedError;
-    }
     throw error;
   } finally {
     isSigningIn = false;
