@@ -54,7 +54,10 @@ import {
   Info,
   Trash2,
   ExternalLink,
-  CheckCircle2
+  CheckCircle2,
+  Globe,
+  Copy,
+  Check
 } from 'lucide-react';
 
 type Screen = 'dashboard' | 'akun' | 'transaksi' | 'jurnal' | 'neraca-saldo' | 'laporan' | 'hpp';
@@ -97,6 +100,8 @@ export default function App() {
   const [isSyncing, setIsSyncing] = useState(false);
   const [syncError, setSyncError] = useState<string | null>(null);
   const [popupBlocked, setPopupBlocked] = useState(false);
+  const [unauthorizedDomain, setUnauthorizedDomain] = useState<string | null>(null);
+  const [domainCopied, setDomainCopied] = useState(false);
   const [isPullConfirmOpen, setIsPullConfirmOpen] = useState(false);
 
   // Initial Load from localStorage or defaults
@@ -660,6 +665,7 @@ export default function App() {
     setUser(guestUser);
     setOauthToken('offline-demo-token');
     setPopupBlocked(false);
+    setUnauthorizedDomain(null);
     setSyncError(null);
     addNotification(
       'Mode Demo Aktif',
@@ -672,6 +678,7 @@ export default function App() {
     setIsSyncing(true);
     setSyncError(null);
     setPopupBlocked(false);
+    setUnauthorizedDomain(null);
     try {
       const res = await googleSignIn();
       if (res) {
@@ -695,10 +702,27 @@ export default function App() {
         err?.message?.includes('popup-blocked') ||
         err?.message?.includes('Pop-up');
       
-      if (isBlocked) {
+      const isUnauthorized = 
+        err?.code === 'auth/unauthorized-domain' ||
+        err?.message?.includes('unauthorized-domain') ||
+        err?.message?.includes('auth/unauthorized-domain');
+
+      if (isUnauthorized) {
+        const detectedDomain = err?.domain || (typeof window !== 'undefined' ? window.location.hostname : '');
+        setUnauthorizedDomain(detectedDomain || 'domain ini');
+        setPopupBlocked(false);
+        setSyncError(`Domain "${detectedDomain}" belum diizinkan di Firebase Console (auth/unauthorized-domain).`);
+        addNotification(
+          'Domain Belum Diizinkan',
+          `Domain ${detectedDomain} belum terdaftar di Authorized Domains Firebase Authentication. Tambahkan domain ini di Firebase Console atau gunakan Mode Demo.`,
+          'warning'
+        );
+      } else if (isBlocked) {
         setPopupBlocked(true);
+        setUnauthorizedDomain(null);
         setSyncError('Pop-up otorisasi diblokir oleh browser di dalam lingkungan pratinjau (iframe).');
       } else {
+        setUnauthorizedDomain(null);
         setSyncError(err.message || 'Gagal login dengan akun Google.');
       }
     } finally {
@@ -990,8 +1014,101 @@ export default function App() {
           </div>
 
           <div className="space-y-4">
-            {/* Pop-up Blocked Special Resolution Box */}
-            {popupBlocked ? (
+            {/* Solution Boxes: Unauthorized Domain OR Pop-up Blocked OR General Sync Error */}
+            {unauthorizedDomain ? (
+              <div className="bg-amber-50/90 border border-amber-300 rounded-2xl p-4.5 space-y-3.5 text-left animate-in fade-in duration-200">
+                <div className="flex items-start gap-3">
+                  <div className="w-8 h-8 rounded-xl bg-amber-100 text-amber-800 flex items-center justify-center shrink-0 mt-0.5">
+                    <Globe className="w-4 h-4 text-amber-700" />
+                  </div>
+                  <div className="space-y-0.5">
+                    <div className="inline-block text-[10px] font-bold uppercase tracking-wider bg-amber-200/80 text-amber-900 px-1.5 py-0.5 rounded">
+                      auth/unauthorized-domain
+                    </div>
+                    <h4 className="font-bold text-xs text-amber-950 pt-0.5">
+                      Domain Belum Terdaftar di Firebase
+                    </h4>
+                    <p className="text-[11px] text-amber-800 leading-relaxed">
+                      Firebase Authentication membatasi login Google hanya dari domain yang diizinkan (whitelisted).
+                    </p>
+                  </div>
+                </div>
+
+                {/* Domain Card with Copy Button */}
+                <div className="bg-white rounded-xl p-3 border border-amber-200 flex items-center justify-between gap-2 shadow-2xs">
+                  <div className="min-w-0 flex-1">
+                    <div className="text-[10px] font-semibold text-slate-500 uppercase tracking-wide">Domain Saat Ini:</div>
+                    <div className="font-mono text-xs font-bold text-slate-900 truncate">
+                      {unauthorizedDomain}
+                    </div>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      if (navigator.clipboard) {
+                        navigator.clipboard.writeText(unauthorizedDomain);
+                        setDomainCopied(true);
+                        setTimeout(() => setDomainCopied(false), 3000);
+                      }
+                    }}
+                    className="inline-flex items-center gap-1.5 px-3 py-1.5 bg-amber-100 hover:bg-amber-200 text-amber-900 text-xs font-semibold rounded-lg transition cursor-pointer shrink-0"
+                  >
+                    {domainCopied ? (
+                      <>
+                        <Check className="w-3.5 h-3.5 text-emerald-600" />
+                        <span>Tersalin!</span>
+                      </>
+                    ) : (
+                      <>
+                        <Copy className="w-3.5 h-3.5" />
+                        <span>Salin</span>
+                      </>
+                    )}
+                  </button>
+                </div>
+
+                {/* Quick 3-Step Guide */}
+                <div className="space-y-1.5 text-[11px] text-slate-700 bg-white/70 rounded-xl p-3 border border-amber-200/60">
+                  <div className="font-bold text-amber-950 text-xs flex items-center gap-1.5">
+                    <span>Langkah Mengaktifkan (1 Menit):</span>
+                  </div>
+                  <ol className="list-decimal list-inside space-y-1 text-slate-600 leading-relaxed">
+                    <li>
+                      Buka{' '}
+                      <a
+                        href="https://console.firebase.google.com/project/gen-lang-client-0924079852/authentication/settings"
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        className="font-bold text-[#580001] underline hover:text-red-800 inline-flex items-center gap-0.5"
+                      >
+                        Firebase Console Settings ↗
+                      </a>
+                    </li>
+                    <li>
+                      Di bagian <strong>Authorized domains</strong>, klik tombol <strong>Add domain</strong>.
+                    </li>
+                    <li>
+                      Tempel <code className="bg-amber-100/70 px-1 py-0.5 rounded font-mono text-amber-900 font-bold">{unauthorizedDomain}</code> (atau <code className="bg-amber-100/70 px-1 py-0.5 rounded font-mono text-amber-900 font-bold">github.io</code>), lalu klik <strong>Save</strong>.
+                    </li>
+                  </ol>
+                </div>
+
+                {/* Instant Entry Solution */}
+                <div className="pt-1">
+                  <button
+                    type="button"
+                    onClick={handleBypassLogin}
+                    className="w-full inline-flex items-center justify-center gap-2 bg-[#580001] hover:bg-[#730002] active:bg-[#400001] text-white py-2.5 px-4 rounded-xl font-bold text-xs tracking-wide shadow-xs transition cursor-pointer"
+                  >
+                    <CheckCircle2 className="w-4 h-4 text-emerald-400" />
+                    <span>Masuk Mode Demo Offline (Tanpa Menunggu)</span>
+                  </button>
+                  <p className="text-[10px] text-slate-500 text-center mt-1.5">
+                    * Semua fitur jurnal, neraca saldo, HPP, & cetak PDF tetap berfungsi penuh secara lokal.
+                  </p>
+                </div>
+              </div>
+            ) : popupBlocked ? (
               <div className="bg-amber-50 border border-amber-200/90 rounded-2xl p-4.5 space-y-3.5 text-left animate-in fade-in duration-200">
                 <div className="flex items-start gap-3">
                   <div className="w-8 h-8 rounded-xl bg-amber-100 text-amber-800 flex items-center justify-center shrink-0 mt-0.5">
