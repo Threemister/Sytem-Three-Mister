@@ -37,13 +37,15 @@ import {
   SlidersHorizontal,
   ArrowRight,
   CheckCircle2,
-  Scale
+  Scale,
+  Store
 } from 'lucide-react';
 
 interface HPPCalculatorProps {
   accounts: Account[];
   transactions: Transaction[];
   onAddTransaction: (trx: Transaction) => void;
+  onNavigateToMarketplace?: () => void;
 }
 
 export interface SavedCalculation {
@@ -203,7 +205,7 @@ const DEFAULT_BENCHMARKS: SavedCalculation[] = [
   }
 ];
 
-export default function HPPCalculator({ accounts, transactions, onAddTransaction }: HPPCalculatorProps) {
+export default function HPPCalculator({ accounts, transactions, onAddTransaction, onNavigateToMarketplace }: HPPCalculatorProps) {
   const [savedCalcs, setSavedCalcs] = useState<SavedCalculation[]>([]);
   const [activeTab, setActiveTab] = useState<'calculator' | 'saved'>('calculator');
   const [searchSaved, setSearchSaved] = useState('');
@@ -731,35 +733,49 @@ export default function HPPCalculator({ accounts, transactions, onAddTransaction
           </p>
         </div>
 
-        {/* Tab Switcher */}
-        <div className="flex bg-slate-100 p-1 rounded-xl shrink-0 self-stretch sm:self-auto">
-          <button
-            type="button"
-            onClick={() => setActiveTab('calculator')}
-            className={`flex-1 sm:flex-initial px-4 py-2 text-xs font-semibold rounded-lg transition duration-150 cursor-pointer ${
-              activeTab === 'calculator' 
-                ? 'bg-white text-[#580001] shadow-xs font-bold' 
-                : 'text-slate-600 hover:text-[#580001]'
-            }`}
-          >
-            Kalkulator Produksi
-          </button>
-          <button
-            type="button"
-            onClick={() => setActiveTab('saved')}
-            className={`flex-1 sm:flex-initial px-4 py-2 text-xs font-semibold rounded-lg transition duration-150 flex items-center justify-center gap-1.5 cursor-pointer ${
-              activeTab === 'saved' 
-                ? 'bg-white text-[#580001] shadow-xs font-bold' 
-                : 'text-slate-600 hover:text-[#580001]'
-            }`}
-          >
-            Riwayat & Patokan HPP
-            {savedCalcs.length > 0 && (
-              <span className="bg-[#580001] text-white text-[10px] px-2 py-0.5 rounded-full font-mono font-bold">
-                {savedCalcs.length}
-              </span>
-            )}
-          </button>
+        {/* Tab Switcher & Quick Navigation */}
+        <div className="flex items-center gap-2 flex-wrap">
+          {onNavigateToMarketplace && (
+            <button
+              type="button"
+              onClick={onNavigateToMarketplace}
+              className="px-3 py-2 text-xs font-bold text-[#580001] bg-[#580001]/10 hover:bg-[#580001]/20 rounded-xl transition flex items-center gap-1.5 cursor-pointer shadow-xs"
+              title="Hitung harga jual marketplace berdasarkan HPP ini"
+            >
+              <Store className="w-4 h-4" />
+              <span>Hitung Harga Marketplace</span>
+            </button>
+          )}
+
+          <div className="flex bg-slate-100 p-1 rounded-xl shrink-0 self-stretch sm:self-auto">
+            <button
+              type="button"
+              onClick={() => setActiveTab('calculator')}
+              className={`flex-1 sm:flex-initial px-4 py-2 text-xs font-semibold rounded-lg transition duration-150 cursor-pointer ${
+                activeTab === 'calculator' 
+                  ? 'bg-white text-[#580001] shadow-xs font-bold' 
+                  : 'text-slate-600 hover:text-[#580001]'
+              }`}
+            >
+              Kalkulator Produksi
+            </button>
+            <button
+              type="button"
+              onClick={() => setActiveTab('saved')}
+              className={`flex-1 sm:flex-initial px-4 py-2 text-xs font-semibold rounded-lg transition duration-150 flex items-center justify-center gap-1.5 cursor-pointer ${
+                activeTab === 'saved' 
+                  ? 'bg-white text-[#580001] shadow-xs font-bold' 
+                  : 'text-slate-600 hover:text-[#580001]'
+              }`}
+            >
+              Riwayat & Patokan HPP
+              {savedCalcs.length > 0 && (
+                <span className="bg-[#580001] text-white text-[10px] px-2 py-0.5 rounded-full font-mono font-bold">
+                  {savedCalcs.length}
+                </span>
+              )}
+            </button>
+          </div>
         </div>
       </div>
 

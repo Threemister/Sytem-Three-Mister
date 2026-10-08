@@ -4,25 +4,29 @@
  */
 
 import { useState, FormEvent } from 'react';
-import { Account, AccountType, NormalBalance, Transaction } from '../types';
-import { Plus, Search, Edit2, Trash2, X, AlertCircle, FileText, Check, RotateCcw, Sparkles } from 'lucide-react';
+import { Account, AccountType, NormalBalance, Transaction, InventoryItem } from '../types';
+import { Plus, Search, Edit2, Trash2, X, AlertCircle, FileText, Check, RotateCcw, Sparkles, Package } from 'lucide-react';
 
 interface COAManagerProps {
   accounts: Account[];
   transactions: Transaction[];
+  inventory?: InventoryItem[];
   onAddAccount: (account: Account) => void;
   onEditAccount: (account: Account) => void;
   onDeleteAccount: (code: string) => void;
   onResetToDefaults?: () => void;
+  onNavigateToInventory?: () => void;
 }
 
 export default function COAManager({
   accounts,
   transactions,
+  inventory = [],
   onAddAccount,
   onEditAccount,
   onDeleteAccount,
-  onResetToDefaults
+  onResetToDefaults,
+  onNavigateToInventory
 }: COAManagerProps) {
   const [search, setSearch] = useState('');
   const [selectedType, setSelectedType] = useState<AccountType | 'Semua'>('Semua');
@@ -273,12 +277,31 @@ export default function COAManager({
               {filteredAccounts.length > 0 ? (
                 filteredAccounts.map((acc) => {
                   const isUsed = isAccountUsed(acc.code);
+                  const linkedInvItems = inventory.filter(i => i.accountCode === acc.code);
+                  const invQty = linkedInvItems.reduce((sum, i) => sum + Math.max(0, i.totalQty - i.usedOrSoldQty), 0);
+                  const invValue = linkedInvItems.reduce((sum, i) => sum + Math.max(0, i.totalQty - i.usedOrSoldQty) * i.unitCost, 0);
+
                   return (
                     <tr key={acc.code} className="hover:bg-slate-50/50 transition">
                       <td className="py-3.5 px-6 font-mono text-xs font-semibold text-slate-700">{acc.code}</td>
                       <td className="py-3.5 px-6">
                         <div>
-                          <span className="font-medium text-slate-900">{acc.name}</span>
+                          <div className="flex flex-wrap items-center gap-2">
+                            <span className="font-medium text-slate-900">{acc.name}</span>
+                            {linkedInvItems.length > 0 && (
+                              <button
+                                type="button"
+                                onClick={onNavigateToInventory}
+                                className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-amber-100 hover:bg-amber-200 text-amber-950 border border-amber-300 text-[10px] font-bold transition cursor-pointer"
+                                title="Klik untuk melihat rincian di Modul Inventory"
+                              >
+                                <Package className="w-3 h-3 text-[#580001]" />
+                                <span>
+                                  Inventory: {invQty} unit/pcs ({new Intl.NumberFormat('id-ID', { style: 'currency', currency: 'IDR', minimumFractionDigits: 0 }).format(invValue)})
+                                </span>
+                              </button>
+                            )}
+                          </div>
                           {acc.description && (
                             <p className="text-slate-400 text-xs mt-0.5 font-light">{acc.description}</p>
                           )}

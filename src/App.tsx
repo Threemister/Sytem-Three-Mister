@@ -4,8 +4,8 @@
  */
 
 import { useState, useEffect, useRef } from 'react';
-import { Account, Transaction, FinanceNotification, SavedCalculation, FinancialSummaryData } from './types';
-import { defaultAccounts, defaultTransactions } from './defaultData';
+import { Account, Transaction, FinanceNotification, SavedCalculation, FinancialSummaryData, SaleOrder, InventoryItem } from './types';
+import { defaultAccounts, defaultTransactions, defaultSales, defaultInventory } from './defaultData';
 import { initAuth, googleSignIn, logout, getAccessToken, clearExpiredToken } from './firebase';
 import { 
   createNewSpreadsheet,
@@ -28,6 +28,10 @@ import TrialBalanceViewer from './components/TrialBalanceViewer';
 import Reports from './components/Reports';
 import AdminDashboard from './components/AdminDashboard';
 import HPPCalculator from './components/HPPCalculator';
+import MarketplaceCalculator from './components/MarketplaceCalculator';
+import SalesManager from './components/SalesManager';
+import InventoryManager from './components/InventoryManager';
+import StockSkuManager from './components/StockSkuManager';
 
 import { 
   LayoutDashboard, 
@@ -45,6 +49,10 @@ import {
   LogIn,
   Lock,
   Calculator,
+  Store,
+  ShoppingBag,
+  Package,
+  Tag,
   Search,
   Building,
   LogOut,
@@ -60,7 +68,7 @@ import {
   Check
 } from 'lucide-react';
 
-type Screen = 'dashboard' | 'akun' | 'transaksi' | 'jurnal' | 'neraca-saldo' | 'laporan' | 'hpp';
+type Screen = 'dashboard' | 'akun' | 'stock' | 'inventory' | 'penjualan' | 'transaksi' | 'jurnal' | 'neraca-saldo' | 'laporan' | 'hpp' | 'marketplace';
 
 export const LOGO_URL = 'https://dffpatvdcpujtntwuyly.supabase.co/storage/v1/object/public/Sytem%20Three%20Mister/Submark%20Secondary%20Logo%203mr%20(White%20Background).png';
 
@@ -71,6 +79,8 @@ export default function App() {
   // Core Financial State
   const [accounts, setAccounts] = useState<Account[]>([]);
   const [transactions, setTransactions] = useState<Transaction[]>([]);
+  const [sales, setSales] = useState<SaleOrder[]>([]);
+  const [inventory, setInventory] = useState<InventoryItem[]>([]);
   const [notifications, setNotifications] = useState<FinanceNotification[]>([]);
   
   // Notification popover state (only visible when user clicks the notification bell)
@@ -108,26 +118,41 @@ export default function App() {
 
   // Initial Load from localStorage or defaults
   useEffect(() => {
-    // 1. Load Accounts
+    // 1. Load Accounts & Inventory
+    const savedInventory = localStorage.getItem('finance_inventory');
+    let loadedInventory: InventoryItem[] = defaultInventory;
+    if (savedInventory) {
+      try {
+        const parsedInv = JSON.parse(savedInventory);
+        if (Array.isArray(parsedInv) && parsedInv.length > 0) {
+          loadedInventory = parsedInv;
+        }
+      } catch {
+        loadedInventory = defaultInventory;
+      }
+    }
+    setInventory(loadedInventory);
+
     const savedAccounts = localStorage.getItem('finance_accounts');
     let hasMigrated = false;
+    let baseAccounts: Account[] = defaultAccounts;
     if (savedAccounts) {
       try {
         const parsed = JSON.parse(savedAccounts);
         const hasOldAccounts = parsed.some((acc: any) => acc.code === '1-1000' || acc.code === '1-1100');
         if (hasOldAccounts) {
-          setAccounts(defaultAccounts);
-          localStorage.setItem('finance_accounts', JSON.stringify(defaultAccounts));
+          baseAccounts = defaultAccounts;
           hasMigrated = true;
         } else {
-          setAccounts(parsed);
+          baseAccounts = parsed;
         }
       } catch {
-        setAccounts(defaultAccounts);
+        baseAccounts = defaultAccounts;
       }
-    } else {
-      setAccounts(defaultAccounts);
     }
+    const syncedAccounts = syncInventoryToAccounts(baseAccounts, loadedInventory);
+    setAccounts(syncedAccounts);
+    localStorage.setItem('finance_accounts', JSON.stringify(syncedAccounts));
 
     // 2. Load Transactions
     const savedTransactions = localStorage.getItem('finance_transactions');
@@ -146,6 +171,23 @@ export default function App() {
       }
     } else {
       setTransactions(defaultTransactions);
+    }
+
+    // 2b. Load Sales Orders (Pending & Settled)
+    const savedSales = localStorage.getItem('finance_sales');
+    if (savedSales) {
+      try {
+        const parsedSales = JSON.parse(savedSales);
+        if (Array.isArray(parsedSales)) {
+          setSales(parsedSales);
+        } else {
+          setSales(defaultSales);
+        }
+      } catch {
+        setSales(defaultSales);
+      }
+    } else {
+      setSales(defaultSales);
     }
 
     // 3. Load Notifications
@@ -250,6 +292,18 @@ export default function App() {
       localStorage.setItem('finance_transactions', JSON.stringify(transactions));
     }
   }, [transactions]);
+
+  useEffect(() => {
+    if (sales.length > 0) {
+      localStorage.setItem('finance_sales', JSON.stringify(sales));
+    }
+  }, [sales]);
+
+  useEffect(() => {
+    if (inventory.length > 0) {
+      localStorage.setItem('finance_inventory', JSON.stringify(inventory));
+    }
+  }, [inventory]);
 
   useEffect(() => {
     if (notifications.length > 0) {
@@ -613,17 +667,344 @@ export default function App() {
     triggerAutoSync(accounts, updated);
   };
 
-  const handleResetToDefaults = () => {
-    setAccounts(defaultAccounts);
-    setTransactions(defaultTransactions);
-    localStorage.setItem('finance_accounts', JSON.stringify(defaultAccounts));
-    localStorage.setItem('finance_transactions', JSON.stringify(defaultTransactions));
+  // ================= SALES & PENDING ESCROW MUTATORS =================
+  const handleAddSale = (newSale: SaleOrder, autoTransactions?: Transaction[]) => {
+    setSales(prev => {
+      const updatedSales = [newSale, ...prev];
+      localStorage.setItem('finance_sales', JSON.stringify(updatedSales));
+      return updatedSales;
+    });
+
+    if (autoTransactions && autoTransactions.length > 0) {
+      setTransactions(prev => {
+        const updatedTxs = [...autoTransactions, ...prev];
+        localStorage.setItem('finance_transactions', JSON.stringify(updatedTxs));
+        checkFinancialTriggers(updatedTxs, accounts);
+        triggerAutoSync(accounts, updatedTxs);
+        return updatedTxs;
+      });
+      addNotification(
+        '✅ Penjualan Langsung Cair & Dijurnal',
+        `Penjualan ${newSale.invoiceNum} (${newSale.channel}) senilai bersih ${formatIDR(newSale.netPayout)} otomatis tercatat ke Transaksi Keuangan & Jurnal Umum.`,
+        'success'
+      );
+    } else {
+      addNotification(
+        '⏳ Penjualan Pending Disimpan',
+        `Pesanan ${newSale.invoiceNum} (${newSale.channel}) senilai bersih ${formatIDR(newSale.netPayout)} disimpan di daftar Pending. Lepas pending saat dana cair untuk otomatis masuk ke Jurnal Umum.`,
+        'info'
+      );
+    }
+  };
+
+  const handleEditSale = (updatedSale: SaleOrder) => {
+    setSales(prev => {
+      const updated = prev.map(s => s.id === updatedSale.id ? updatedSale : s);
+      localStorage.setItem('finance_sales', JSON.stringify(updated));
+      return updated;
+    });
     addNotification(
-      'Sistem Di-reset',
-      'Daftar akun dan transaksi contoh telah di-reset ke data bawaan baru.',
+      'Penjualan Diperbarui',
+      `Data pesanan penjualan ${updatedSale.invoiceNum} berhasil diperbarui.`,
+      'info'
+    );
+  };
+
+  const handleDeleteSale = (saleId: string, removeLinkedTransactions = true) => {
+    const targetSale = sales.find(s => s.id === saleId);
+    setSales(prev => {
+      const updated = prev.filter(s => s.id !== saleId);
+      localStorage.setItem('finance_sales', JSON.stringify(updated));
+      return updated;
+    });
+
+    if (removeLinkedTransactions && targetSale?.linkedTransactionIds && targetSale.linkedTransactionIds.length > 0) {
+      const linkedSet = new Set(targetSale.linkedTransactionIds);
+      setTransactions(prev => {
+        const updatedTxs = prev.filter(t => !linkedSet.has(t.id) && t.refNum !== targetSale.invoiceNum && t.refNum !== `FEE-${targetSale.invoiceNum}` && t.refNum !== `HPP-${targetSale.invoiceNum}`);
+        localStorage.setItem('finance_transactions', JSON.stringify(updatedTxs));
+        triggerAutoSync(accounts, updatedTxs);
+        return updatedTxs;
+      });
+    }
+
+    if (targetSale) {
+      addNotification(
+        'Penjualan Dihapus',
+        `Pesanan penjualan ${targetSale.invoiceNum} telah dihapus dari sistem.`,
+        'warning'
+      );
+    }
+  };
+
+  const handleReleasePendingSales = (
+    saleIds: string[],
+    releaseConfig: {
+      settledDate: string;
+      targetAccountCode: string;
+      revenueAccountCode: string;
+      feeAccountCode: string;
+      recordFeeSeparately: boolean;
+      recordHppAuto: boolean;
+      hppDebitAccountCode: string;
+      hppCreditAccountCode: string;
+    }
+  ) => {
+    const idSet = new Set(saleIds);
+    const salesToRelease = sales.filter(s => idSet.has(s.id) && s.status === 'pending');
+    if (salesToRelease.length === 0) return;
+
+    const newTransactions: Transaction[] = [];
+    const linkedMap: Record<string, string[]> = {};
+    const nowIso = new Date().toISOString();
+
+    salesToRelease.forEach((sale, idx) => {
+      const txIdsForThisSale: string[] = [];
+      const baseTime = Date.now() + idx * 10;
+
+      if (releaseConfig.recordFeeSeparately && sale.marketplaceFee > 0) {
+        const revTxId = `TX-SLS-${baseTime}-${Math.floor(Math.random() * 100000)}`;
+        txIdsForThisSale.push(revTxId);
+        newTransactions.push({
+          id: revTxId,
+          date: releaseConfig.settledDate,
+          refNum: sale.invoiceNum,
+          description: `Pencairan Penjualan ${sale.channel} (${sale.productName} x${sale.qty} pcs) - ${sale.customerName}`,
+          debitAccount: releaseConfig.targetAccountCode,
+          creditAccount: releaseConfig.revenueAccountCode,
+          amount: sale.grossTransacted,
+          createdAt: nowIso
+        });
+
+        const feeTxId = `TX-FEE-${baseTime + 1}-${Math.floor(Math.random() * 100000)}`;
+        txIdsForThisSale.push(feeTxId);
+        newTransactions.push({
+          id: feeTxId,
+          date: releaseConfig.settledDate,
+          refNum: `FEE-${sale.invoiceNum}`,
+          description: `Potongan Admin & Komisi ${sale.channel} atas Pesanan ${sale.invoiceNum}`,
+          debitAccount: releaseConfig.feeAccountCode,
+          creditAccount: releaseConfig.targetAccountCode,
+          amount: sale.marketplaceFee,
+          createdAt: nowIso
+        });
+      } else {
+        const netTxId = `TX-SLS-${baseTime}-${Math.floor(Math.random() * 100000)}`;
+        txIdsForThisSale.push(netTxId);
+        newTransactions.push({
+          id: netTxId,
+          date: releaseConfig.settledDate,
+          refNum: sale.invoiceNum,
+          description: `Pencairan Penjualan Bersih ${sale.channel} (${sale.productName} x${sale.qty} pcs) - ${sale.customerName}`,
+          debitAccount: releaseConfig.targetAccountCode,
+          creditAccount: releaseConfig.revenueAccountCode,
+          amount: sale.netPayout,
+          createdAt: nowIso
+        });
+      }
+
+      if (releaseConfig.recordHppAuto && sale.totalHpp > 0) {
+        const hppTxId = `TX-HPP-${baseTime + 2}-${Math.floor(Math.random() * 100000)}`;
+        txIdsForThisSale.push(hppTxId);
+        newTransactions.push({
+          id: hppTxId,
+          date: releaseConfig.settledDate,
+          refNum: `HPP-${sale.invoiceNum}`,
+          description: `HPP Penjualan ${sale.productName} (${sale.qty} pcs) Ref ${sale.invoiceNum}`,
+          debitAccount: releaseConfig.hppDebitAccountCode,
+          creditAccount: releaseConfig.hppCreditAccountCode,
+          amount: sale.totalHpp,
+          createdAt: nowIso
+        });
+      }
+
+      linkedMap[sale.id] = txIdsForThisSale;
+    });
+
+    setSales(prev => {
+      const updatedSales = prev.map(s => {
+        if (idSet.has(s.id) && s.status === 'pending') {
+          return {
+            ...s,
+            status: 'settled' as const,
+            settledDate: releaseConfig.settledDate,
+            targetAccountCode: releaseConfig.targetAccountCode,
+            revenueAccountCode: releaseConfig.revenueAccountCode,
+            feeAccountCode: releaseConfig.feeAccountCode,
+            recordFeeSeparately: releaseConfig.recordFeeSeparately,
+            recordHppAuto: releaseConfig.recordHppAuto,
+            hppDebitAccountCode: releaseConfig.hppDebitAccountCode,
+            hppCreditAccountCode: releaseConfig.hppCreditAccountCode,
+            linkedTransactionIds: linkedMap[s.id] || []
+          };
+        }
+        return s;
+      });
+      localStorage.setItem('finance_sales', JSON.stringify(updatedSales));
+      return updatedSales;
+    });
+
+    setTransactions(prev => {
+      const updatedTxs = [...newTransactions, ...prev];
+      localStorage.setItem('finance_transactions', JSON.stringify(updatedTxs));
+      checkFinancialTriggers(updatedTxs, accounts);
+      triggerAutoSync(accounts, updatedTxs);
+      return updatedTxs;
+    });
+
+    const totalNetReleased = salesToRelease.reduce((sum, s) => sum + s.netPayout, 0);
+    addNotification(
+      '💸 Dana Pending Cair & Masuk Jurnal Umum',
+      `${salesToRelease.length} pesanan penjualan senilai bersih ${formatIDR(totalNetReleased)} telah dilepas dari Pending dan otomatis dicatat ke Pencatatan Transaksi Keuangan & Jurnal Umum.`,
       'success'
     );
-    triggerAutoSync(defaultAccounts, defaultTransactions);
+  };
+
+  const handleRevertSaleToPending = (saleId: string) => {
+    const targetSale = sales.find(s => s.id === saleId);
+    if (!targetSale) return;
+
+    const linkedSet = new Set(targetSale.linkedTransactionIds || []);
+    setTransactions(prev => {
+      const updatedTxs = prev.filter(
+        t =>
+          !linkedSet.has(t.id) &&
+          t.refNum !== targetSale.invoiceNum &&
+          t.refNum !== `FEE-${targetSale.invoiceNum}` &&
+          t.refNum !== `HPP-${targetSale.invoiceNum}`
+      );
+      localStorage.setItem('finance_transactions', JSON.stringify(updatedTxs));
+      triggerAutoSync(accounts, updatedTxs);
+      return updatedTxs;
+    });
+
+    setSales(prev => {
+      const updatedSales = prev.map(s =>
+        s.id === saleId
+          ? { ...s, status: 'pending' as const, settledDate: undefined, linkedTransactionIds: [] }
+          : s
+      );
+      localStorage.setItem('finance_sales', JSON.stringify(updatedSales));
+      return updatedSales;
+    });
+
+    addNotification(
+      '↩️ Penjualan Dikembalikan ke Pending',
+      `Pesanan ${targetSale.invoiceNum} dikembalikan ke status Pending dan jurnal terkait telah ditarik kembali.`,
+      'warning'
+    );
+  };
+
+  // Helper to sync Inventory remaining values directly into COA Accounts (initialBalance)
+  // WITHOUT adding anything to Pencatatan Transaksi Keuangan or Jurnal Umum
+  const syncInventoryToAccounts = (accList: Account[], invList: InventoryItem[]): Account[] => {
+    const invAccountCodes = new Set(['1-1005', '1-1006', '1-2001']);
+    invList.forEach(item => {
+      if (item.accountCode) invAccountCodes.add(item.accountCode);
+    });
+
+    const totalsByAcc: Record<string, number> = {};
+    invAccountCodes.forEach(code => {
+      totalsByAcc[code] = 0;
+    });
+
+    invList.forEach(item => {
+      const rem = Math.max(0, item.totalQty - item.usedOrSoldQty);
+      const val = rem * item.unitCost;
+      const code = item.accountCode || (item.category === 'for_sale' ? '1-1005' : '1-1006');
+      totalsByAcc[code] = (totalsByAcc[code] || 0) + val;
+    });
+
+    const updated = accList.map(acc => {
+      if (invAccountCodes.has(acc.code)) {
+        return {
+          ...acc,
+          initialBalance: totalsByAcc[acc.code] || 0
+        };
+      }
+      return acc;
+    });
+
+    // Balance initialBalance in 3-1001 Modal Pemilik so Neraca Saldo remains balanced
+    let otherDebitInit = 0;
+    let otherCreditInit = 0;
+    updated.forEach(acc => {
+      if (acc.code === '3-1001') return;
+      if (acc.normalBalance === 'Debit') otherDebitInit += acc.initialBalance;
+      else otherCreditInit += acc.initialBalance;
+    });
+    const modalBalanceNeeded = Math.max(0, otherDebitInit - otherCreditInit);
+
+    return updated.map(acc =>
+      acc.code === '3-1001' ? { ...acc, initialBalance: modalBalanceNeeded } : acc
+    );
+  };
+
+  // ================= INVENTORY STATE MUTATORS (SYNC TO COA, NO JOURNAL/TX) =================
+  const handleAddInventory = (newItem: InventoryItem) => {
+    const updatedInv = [newItem, ...inventory];
+    setInventory(updatedInv);
+    localStorage.setItem('finance_inventory', JSON.stringify(updatedInv));
+
+    const updatedAccs = syncInventoryToAccounts(accounts, updatedInv);
+    setAccounts(updatedAccs);
+    localStorage.setItem('finance_accounts', JSON.stringify(updatedAccs));
+    triggerAutoSync(updatedAccs, transactions);
+
+    addNotification(
+      '📦 Barang Inventory Ditambahkan',
+      `"${newItem.name}" (${newItem.remainingQty} ${newItem.unit}) senilai ${formatIDR(newItem.totalRemainingValue)} masuk ke Akun [${newItem.accountCode}] tanpa masuk ke Jurnal Umum.`,
+      'info'
+    );
+  };
+
+  const handleEditInventory = (updatedItem: InventoryItem) => {
+    const updatedInv = inventory.map(i => (i.id === updatedItem.id ? updatedItem : i));
+    setInventory(updatedInv);
+    localStorage.setItem('finance_inventory', JSON.stringify(updatedInv));
+
+    const updatedAccs = syncInventoryToAccounts(accounts, updatedInv);
+    setAccounts(updatedAccs);
+    localStorage.setItem('finance_accounts', JSON.stringify(updatedAccs));
+    triggerAutoSync(updatedAccs, transactions);
+  };
+
+  const handleDeleteInventory = (id: string) => {
+    const target = inventory.find(i => i.id === id);
+    const updatedInv = inventory.filter(i => i.id !== id);
+    setInventory(updatedInv);
+    localStorage.setItem('finance_inventory', JSON.stringify(updatedInv));
+
+    const updatedAccs = syncInventoryToAccounts(accounts, updatedInv);
+    setAccounts(updatedAccs);
+    localStorage.setItem('finance_accounts', JSON.stringify(updatedAccs));
+    triggerAutoSync(updatedAccs, transactions);
+
+    if (target) {
+      addNotification(
+        'Barang Inventory Dihapus',
+        `"${target.name}" telah dihapus dan saldo Akun [${target.accountCode}] telah disesuaikan.`,
+        'warning'
+      );
+    }
+  };
+
+  const handleResetToDefaults = () => {
+    const syncedDefaultAccounts = syncInventoryToAccounts(defaultAccounts, defaultInventory);
+    setAccounts(syncedDefaultAccounts);
+    setTransactions(defaultTransactions);
+    setSales(defaultSales);
+    setInventory(defaultInventory);
+    localStorage.setItem('finance_accounts', JSON.stringify(syncedDefaultAccounts));
+    localStorage.setItem('finance_transactions', JSON.stringify(defaultTransactions));
+    localStorage.setItem('finance_sales', JSON.stringify(defaultSales));
+    localStorage.setItem('finance_inventory', JSON.stringify(defaultInventory));
+    addNotification(
+      'Sistem Di-reset',
+      'Daftar akun, inventory, penjualan, dan transaksi contoh telah di-reset ke data bawaan baru.',
+      'success'
+    );
+    triggerAutoSync(syncedDefaultAccounts, defaultTransactions);
   };
 
   // Mark all notifications as read
@@ -943,6 +1324,7 @@ export default function App() {
   };
 
   const unreadNotisCount = notifications.filter(n => !n.isRead).length;
+  const pendingSalesCount = sales.filter(s => s.status === 'pending').length;
 
   if (isAuthChecking) {
     return (
@@ -1244,11 +1626,15 @@ export default function App() {
             {[
               { id: 'dashboard', label: 'Dashboard', icon: LayoutDashboard },
               { id: 'akun', label: 'Daftar Akun (COA)', icon: FileBox },
-              { id: 'transaksi', label: 'Pencatatan Transaksi', icon: ReceiptText },
+              { id: 'stock', label: 'Stock & Kode SKU Otomatis', icon: Tag },
+              { id: 'inventory', label: 'Inventory (Nilai Belum Terjual & Dipakai)', icon: Package },
+              { id: 'penjualan', label: 'Penjualan & Uang Pending Marketplace', icon: ShoppingBag, badge: pendingSalesCount },
+              { id: 'transaksi', label: 'Pencatatan Transaksi Keuangan', icon: ReceiptText },
               { id: 'jurnal', label: 'Jurnal Umum', icon: BookOpen },
               { id: 'neraca-saldo', label: 'Neraca Saldo', icon: Scale },
               { id: 'laporan', label: 'Laporan Keuangan', icon: FileSpreadsheet },
               { id: 'hpp', label: 'Kalkulator HPP', icon: Calculator },
+              { id: 'marketplace', label: 'Harga Marketplace (Shopee/TikTok/Lazada)', icon: Store },
             ].map((item) => {
               const isActive = currentScreen === item.id;
               const Icon = item.icon;
@@ -1265,6 +1651,11 @@ export default function App() {
                     aria-label={item.label}
                   >
                     <Icon className="w-5 h-5" />
+                    {item.badge ? (
+                      <span className="absolute -top-1 -right-1 bg-amber-500 text-slate-950 text-[9px] font-black h-4 min-w-4 px-1 rounded-full flex items-center justify-center ring-2 ring-white">
+                        {item.badge}
+                      </span>
+                    ) : null}
                     {isActive && (
                       <span className="absolute -left-2 top-1/2 -translate-y-1/2 w-1 h-6 bg-[#580001] rounded-r-full" />
                     )}
@@ -1377,6 +1768,58 @@ export default function App() {
 
           <button
             onClick={() => {
+              setCurrentScreen('stock');
+              setIsDrawerOpen(false);
+            }}
+            className={`w-full text-left px-4 py-3 rounded-xl text-xs font-semibold flex items-center gap-3 transition cursor-pointer ${
+              currentScreen === 'stock'
+                ? 'bg-[#580001] text-white shadow-xs font-bold'
+                : 'text-slate-700 hover:bg-slate-100 hover:text-[#580001]'
+            }`}
+          >
+            <Tag className="w-4.5 h-4.5" />
+            Stock & Kode SKU
+          </button>
+
+          <button
+            onClick={() => {
+              setCurrentScreen('inventory');
+              setIsDrawerOpen(false);
+            }}
+            className={`w-full text-left px-4 py-3 rounded-xl text-xs font-semibold flex items-center gap-3 transition cursor-pointer ${
+              currentScreen === 'inventory'
+                ? 'bg-[#580001] text-white shadow-xs font-bold'
+                : 'text-slate-700 hover:bg-slate-100 hover:text-[#580001]'
+            }`}
+          >
+            <Package className="w-4.5 h-4.5" />
+            Inventory (Nilai Total Harga)
+          </button>
+
+          <button
+            onClick={() => {
+              setCurrentScreen('penjualan');
+              setIsDrawerOpen(false);
+            }}
+            className={`w-full text-left px-4 py-3 rounded-xl text-xs font-semibold flex items-center justify-between transition cursor-pointer ${
+              currentScreen === 'penjualan'
+                ? 'bg-[#580001] text-white shadow-xs font-bold'
+                : 'text-slate-700 hover:bg-slate-100 hover:text-[#580001]'
+            }`}
+          >
+            <span className="flex items-center gap-3">
+              <ShoppingBag className="w-4.5 h-4.5" />
+              Penjualan (Pending/Cair)
+            </span>
+            {pendingSalesCount > 0 && (
+              <span className="px-2 py-0.5 rounded-full bg-amber-400 text-slate-950 text-[10px] font-black">
+                {pendingSalesCount} Pending
+              </span>
+            )}
+          </button>
+
+          <button
+            onClick={() => {
               setCurrentScreen('transaksi');
               setIsDrawerOpen(false);
             }}
@@ -1448,6 +1891,21 @@ export default function App() {
           >
             <Calculator className="w-4.5 h-4.5" />
             Kalkulator HPP
+          </button>
+
+          <button
+            onClick={() => {
+              setCurrentScreen('marketplace');
+              setIsDrawerOpen(false);
+            }}
+            className={`w-full text-left px-4 py-3 rounded-xl text-xs font-semibold flex items-center gap-3 transition cursor-pointer ${
+              currentScreen === 'marketplace'
+                ? 'bg-[#580001] text-white shadow-xs font-bold'
+                : 'text-slate-700 hover:bg-slate-100 hover:text-[#580001]'
+            }`}
+          >
+            <Store className="w-4.5 h-4.5" />
+            Harga Marketplace (Shopee/TikTok/Lazada)
           </button>
         </nav>
 
@@ -1722,11 +2180,15 @@ export default function App() {
             {[
               { id: 'dashboard', label: 'Dashboard', icon: LayoutDashboard },
               { id: 'akun', label: 'Daftar Akun (COA)', icon: FileBox },
+              { id: 'stock', label: 'Stock & Kode SKU', icon: Tag },
+              { id: 'inventory', label: 'Inventory (Nilai Harga)', icon: Package },
+              { id: 'penjualan', label: 'Penjualan (Pending/Cair)', icon: ShoppingBag, badge: pendingSalesCount },
               { id: 'transaksi', label: 'Pencatatan Transaksi', icon: ReceiptText },
               { id: 'jurnal', label: 'Jurnal Umum', icon: BookOpen },
               { id: 'neraca-saldo', label: 'Neraca Saldo', icon: Scale },
               { id: 'laporan', label: 'Laporan Keuangan', icon: FileSpreadsheet },
               { id: 'hpp', label: 'Kalkulator HPP', icon: Calculator },
+              { id: 'marketplace', label: 'Harga Marketplace', icon: Store },
             ].map((tab) => {
               const isActive = currentScreen === tab.id;
               const Icon = tab.icon;
@@ -1744,6 +2206,11 @@ export default function App() {
                   }`}
                 >
                   <Icon className="w-4 h-4 sm:w-4.5 sm:h-4.5" />
+                  {tab.badge ? (
+                    <span className="absolute -top-1 -right-1 bg-amber-500 text-slate-950 text-[9px] font-black h-4 min-w-4 px-1 rounded-full flex items-center justify-center ring-2 ring-white">
+                      {tab.badge}
+                    </span>
+                  ) : null}
                   
                   {/* Desktop Hover Tooltip */}
                   <span className="pointer-events-none absolute -bottom-8 left-1/2 -translate-x-1/2 opacity-0 group-hover:opacity-100 transition-opacity bg-slate-900 text-white text-[10px] font-medium py-0.5 px-2 rounded-md shadow-md whitespace-nowrap z-50">
@@ -1789,10 +2256,49 @@ export default function App() {
             <COAManager
               accounts={accounts}
               transactions={transactions}
+              inventory={inventory}
               onAddAccount={handleAddAccount}
               onEditAccount={handleEditAccount}
               onDeleteAccount={handleDeleteAccount}
               onResetToDefaults={handleResetToDefaults}
+              onNavigateToInventory={() => setCurrentScreen('inventory')}
+            />
+          )}
+
+          {currentScreen === 'stock' && (
+            <StockSkuManager
+              inventory={inventory}
+              onAddInventory={handleAddInventory}
+              onEditInventory={handleEditInventory}
+              onDeleteInventory={handleDeleteInventory}
+              onNavigateToInventory={() => setCurrentScreen('inventory')}
+            />
+          )}
+
+          {currentScreen === 'inventory' && (
+            <InventoryManager
+              accounts={accounts}
+              inventory={inventory}
+              onAddInventory={handleAddInventory}
+              onEditInventory={handleEditInventory}
+              onDeleteInventory={handleDeleteInventory}
+              onNavigateToCOA={() => setCurrentScreen('akun')}
+              onNavigateToStockSku={() => setCurrentScreen('stock')}
+            />
+          )}
+
+          {currentScreen === 'penjualan' && (
+            <SalesManager
+              accounts={accounts}
+              transactions={transactions}
+              sales={sales}
+              onAddSale={handleAddSale}
+              onEditSale={handleEditSale}
+              onDeleteSale={handleDeleteSale}
+              onReleasePendingSales={handleReleasePendingSales}
+              onRevertSaleToPending={handleRevertSaleToPending}
+              onNavigateToTransactions={() => setCurrentScreen('transaksi')}
+              onNavigateToJournal={() => setCurrentScreen('jurnal')}
             />
           )}
 
@@ -1832,7 +2338,12 @@ export default function App() {
               accounts={accounts}
               transactions={transactions}
               onAddTransaction={handleAddTransaction}
+              onNavigateToMarketplace={() => setCurrentScreen('marketplace')}
             />
+          )}
+
+          {currentScreen === 'marketplace' && (
+            <MarketplaceCalculator />
           )}
         </main>
 

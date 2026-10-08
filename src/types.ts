@@ -144,3 +144,84 @@ export interface FinancialSummaryData {
   trialBalanceDiff: number;
   lastUpdated: string;
 }
+
+export type SaleChannel =
+  | 'Shopee'
+  | 'TikTok Shop'
+  | 'Lazada'
+  | 'Tokopedia'
+  | 'WhatsApp / Direct'
+  | 'Offline / Toko'
+  | 'Reseller / Grosir';
+
+export type SaleStatus = 'pending' | 'settled';
+
+export interface SaleOrder {
+  id: string;
+  orderDate: string; // YYYY-MM-DD (tanggal pesanan dibuat)
+  settledDate?: string; // YYYY-MM-DD (tanggal dana cair / dilepas dari pending)
+  invoiceNum: string; // Nomor pesanan / invoice, e.g., "SHP-261008-01"
+  channel: SaleChannel;
+  customerName: string;
+  productName: string;
+  qty: number;
+  unitPrice: number; // Harga jual etalase per pcs
+  discountAmount: number; // Total potongan diskon toko (Rp)
+  grossTransacted: number; // Total yang dibayar pembeli = (qty * unitPrice) - discountAmount
+  marketplaceFee: number; // Potongan admin/komisi marketplace (Rp)
+  netPayout: number; // Dana bersih yang akan/sudah cair = grossTransacted - marketplaceFee
+  hppPerPiece: number; // HPP per pcs
+  totalHpp: number; // Total HPP = qty * hppPerPiece
+  estimatedNetProfit: number; // Laba bersih pesanan = netPayout - totalHpp
+  status: SaleStatus; // 'pending' (tertahan di marketplace) | 'settled' (sudah cair & masuk transaksi/jurnal)
+  targetAccountCode: string; // Kode akun Kas/Bank penerima (misal '1-1003' Sea Bank / '1-1002' BCA)
+  revenueAccountCode: string; // Kode akun Pendapatan (misal '4-1001')
+  feeAccountCode?: string; // Kode akun Beban Admin/Pemasaran (misal '5-1008')
+  recordFeeSeparately?: boolean; // Apakah potongan marketplace dicatat terpisah sebagai beban
+  recordHppAuto?: boolean; // Apakah HPP dicatat otomatis ke jurnal saat cair
+  hppDebitAccountCode?: string; // '5-1001'
+  hppCreditAccountCode?: string; // '1-1005'
+  linkedTransactionIds?: string[]; // ID transaksi di Pencatatan Transaksi Keuangan setelah dilepas
+  notes?: string;
+  createdAt: string;
+}
+
+export type InventoryCategory = 'for_sale' | 'internal_use';
+
+export interface InventoryVariantStock {
+  id: string;
+  variantName: string; // e.g., "Size S", "Size M", "Size L", "Size XL", "Size XXL", "All Size"
+  skuCode: string; // Kode SKU spesifik varian, otomatis dari SKU produk induk (misal "TM-TS24-BLK-S")
+  totalQty: number; // Stok masuk varian ini
+  usedOrSoldQty: number; // Sudah terjual / terpakai varian ini
+  remainingQty: number; // Stok tersedia varian ini = totalQty - usedOrSoldQty
+  isAvailable?: boolean; // Status Tersedia (true) atau Tidak Tersedia / Nonaktif (false) yang bisa di-edit
+}
+
+export interface InventoryItem {
+  id: string;
+  sku: string; // Kode Barang / SKU, otomatis sesuai spesifikasi & nama produk, e.g., "TM-LP-OVS-SMR-BLK-01"
+  name: string; // Nama barang / artikel
+  productSleeve?: string; // Produk: 'Lengan Pendek' | 'Lengan Panjang'
+  designStyle?: string; // Style desain, e.g., 'Oversize', 'Regular Fit', 'Boxy'
+  designGraphic?: string; // Gambar desain, e.g., 'Samurai', 'Typography', 'Polos'
+  productColor?: string; // Warna produk, e.g., 'Hitam', 'Putih', 'Navy'
+  designNumber?: string; // Nomor desain, e.g., '01', '02', '03'
+  category: InventoryCategory; // 'for_sale' (Barang untuk Dijual) | 'internal_use' (Barang untuk Dipakai / Tidak Dijual)
+  subCategory: string; // e.g., "Kaos / T-Shirt", "Hoodie / Outerwear", "Kemasan & Packing", "Alat Studio & Toko"
+  unit: string; // e.g., "pcs", "pack", "roll", "unit", "set"
+  totalQty: number; // Total stok masuk / dimiliki
+  usedOrSoldQty: number; // Jumlah yang sudah terjual (untuk for_sale) atau sudah terpakai/habis (untuk internal_use)
+  remainingQty: number; // Jumlah yang belum terjual / masih tersedia = totalQty - usedOrSoldQty
+  isAvailable?: boolean; // Status ketersediaan produk (Tersedia / Tidak Tersedia) yang bisa di-edit
+  unitCost: number; // HPP per pcs (untuk for_sale) atau Harga Beli/Perolehan per unit (untuk internal_use)
+  sellingPrice?: number; // Harga jual etalase per pcs (khusus for_sale, 0 untuk internal_use)
+  totalRemainingValue: number; // Nilai total belum terjual / sisa pakai = remainingQty * unitCost
+  accountCode: string; // Kode Akun COA tujuan (misal '1-1005' Persediaan Barang, '1-1006' Perlengkapan, '1-2001' Peralatan)
+  variants?: InventoryVariantStock[]; // Rincian stok mana saja yang tersedia per ukuran/varian beserta sub-SKU
+  location?: string; // Lokasi penyimpanan / etalase (misal "Rak Gudang A1 - Etalase Shopee & TikTok")
+  notes?: string;
+  updatedAt: string;
+}
+
+
