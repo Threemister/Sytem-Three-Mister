@@ -1552,11 +1552,11 @@ export default function AdminDashboard({
                   <h3 className="font-bold text-slate-900 text-base">Sinkronisasi Google Sheets Cloud</h3>
                   <span className="inline-flex items-center gap-1 bg-emerald-50 text-emerald-800 text-[10px] font-bold px-2 py-0.5 rounded-full border border-emerald-200">
                     <span className="w-1.5 h-1.5 rounded-full bg-emerald-500 animate-pulse" />
-                    Otomatis & Realtime
+                    8 Sheet Fitur Otomatis & Realtime
                   </span>
                 </div>
                 <p className="text-slate-500 text-xs mt-0.5">
-                  Sinkronisasi instan akun, transaksi, kalkulasi HPP, dan ringkasan keuangan tanpa langkah rumit.
+                  Setiap fitur baru (Stock & SKU, Inventory, Penjualan, Akun, Transaksi, HPP, Harga Marketplace, & Ringkasan) otomatis membuat dan memperbarui sheet di Google Spreadsheet.
                 </p>
               </div>
             </div>
@@ -1615,7 +1615,18 @@ export default function AdminDashboard({
               </div>
             </div>
 
-            <div className="flex items-center gap-2 shrink-0">
+            <div className="flex flex-wrap items-center gap-2 shrink-0">
+              {onInitializeSheets && user && token && (
+                <button
+                  onClick={onInitializeSheets}
+                  disabled={isSyncing}
+                  className="inline-flex items-center gap-1.5 px-3 py-1.5 bg-emerald-50 hover:bg-emerald-100 border border-emerald-200 text-emerald-800 font-semibold rounded-lg transition disabled:opacity-50 cursor-pointer"
+                  title="Pastikan seluruh sheet fitur terbaru otomatis dibuat dan dilengkapi kolomnya di Google Spreadsheet"
+                >
+                  <Sparkles className="w-3.5 h-3.5 text-emerald-600" />
+                  <span>Update Sheet Fitur Otomatis</span>
+                </button>
+              )}
               {onCreateNewSheet && user && token && (
                 <button
                   onClick={onCreateNewSheet}
@@ -1634,6 +1645,46 @@ export default function AdminDashboard({
                 <Settings className="w-3.5 h-3.5 text-slate-500" />
                 <span>{showConfig ? 'Tutup Pengaturan' : 'Ganti ID Sheet'}</span>
               </button>
+            </div>
+          </div>
+
+          {/* Daftar Sheet Fitur Otomatis yang Tersinkronisasi */}
+          <div className="bg-slate-50/70 border border-slate-200/80 rounded-xl p-3.5 space-y-2">
+            <div className="flex items-center justify-between gap-2 flex-wrap">
+              <span className="text-[11px] font-bold text-slate-700 uppercase tracking-wider flex items-center gap-1.5">
+                <Table className="w-3.5 h-3.5 text-[#580001]" />
+                <span>Daftar Lembar Kerja (Sheet) Fitur yang Otomatis Dibuat & Disinkronkan:</span>
+              </span>
+              <span className="text-[10px] font-semibold text-emerald-700 bg-emerald-50 border border-emerald-200 px-2 py-0.5 rounded-md">
+                Auto-Add Sheet & Auto-Update Kolom Aktif
+              </span>
+            </div>
+            <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 pt-0.5">
+              {[
+                { sheet: 'AKUN', desc: 'Daftar Akun (COA) & Saldo Awal' },
+                { sheet: 'STOCK_SKU', desc: 'Kode SKU, Status & Stock Tidak Terhitung' },
+                { sheet: 'INVENTORY', desc: 'Barang Dijual & Dipakai (Nilai Harga)' },
+                { sheet: 'PENJUALAN', desc: 'Penjualan Pending & Sudah Cair' },
+                { sheet: 'TRANSAKSI', desc: 'Pencatatan Transaksi & Jurnal Umum' },
+                { sheet: 'HPP_PRODUK', desc: 'Kalkulasi & Patokan HPP Produksi' },
+                { sheet: 'HARGA_MARKETPLACE', desc: 'Simulasi Harga Shopee/TikTok/Lazada' },
+                { sheet: 'RINGKASAN_KEUANGAN', desc: 'Rekap KPI Keuangan, Stock & Penjualan' },
+              ].map(item => (
+                <div
+                  key={item.sheet}
+                  className="bg-white border border-slate-200/90 rounded-lg px-2.5 py-2 flex flex-col justify-between"
+                >
+                  <div className="flex items-center justify-between gap-1">
+                    <code className="text-[10px] font-mono font-black text-[#580001] truncate">
+                      {item.sheet}
+                    </code>
+                    <CheckCircle2 className="w-3 h-3 text-emerald-500 shrink-0" />
+                  </div>
+                  <p className="text-[10px] text-slate-500 mt-0.5 truncate" title={item.desc}>
+                    {item.desc}
+                  </p>
+                </div>
+              ))}
             </div>
           </div>
 
@@ -1659,7 +1710,7 @@ export default function AdminDashboard({
                 </button>
               </div>
               <p className="text-slate-400 text-[11px]">
-                ID Spreadsheet berada pada URL antara <code>/d/</code> dan <code>/edit</code>. Sistem otomatis menambahkan sheet <code>AKUN</code>, <code>TRANSAKSI</code>, <code>HPP_PRODUK</code>, dan <code>RINGKASAN_KEUANGAN</code> jika belum ada.
+                ID Spreadsheet berada pada URL antara <code>/d/</code> dan <code>/edit</code>. Sistem otomatis menambahkan seluruh sheet fitur (<code>AKUN</code>, <code>STOCK_SKU</code>, <code>INVENTORY</code>, <code>PENJUALAN</code>, <code>TRANSAKSI</code>, <code>HPP_PRODUK</code>, <code>HARGA_MARKETPLACE</code>, dan <code>RINGKASAN_KEUANGAN</code>) beserta pembaruan kolomnya jika belum ada.
               </p>
             </div>
           )}
@@ -1679,7 +1730,7 @@ export default function AdminDashboard({
                 <div className="text-left">
                   <h4 className="font-bold text-sm tracking-tight">Simpan Data ke Sheets (Save Data)</h4>
                   <p className="text-[11px] text-white/80 group-disabled:text-slate-400 mt-0.5">
-                    Kirim seluruh data Akun, Transaksi, HPP, & Ringkasan ke awan
+                    Kirim seluruh data Akun, Stock SKU, Inventory, Penjualan, Transaksi, HPP, & Ringkasan ke awan
                   </p>
                 </div>
               </div>
@@ -1699,7 +1750,7 @@ export default function AdminDashboard({
                 <div className="text-left">
                   <h4 className="font-bold text-sm tracking-tight">Unduh Data dari Sheets (Download Data)</h4>
                   <p className="text-[11px] text-slate-500 group-disabled:text-slate-400 mt-0.5">
-                    Tarik pembaruan data terbaru dari Google Sheets ke sistem lokal
+                    Tarik pembaruan seluruh sheet fitur dari Google Sheets ke sistem lokal
                   </p>
                 </div>
               </div>
@@ -1711,7 +1762,7 @@ export default function AdminDashboard({
           <div className="flex items-center gap-2 text-[11px] text-slate-600 bg-slate-50/80 px-3.5 py-2.5 rounded-lg border border-slate-200/60">
             <CheckCircle2 className="w-4 h-4 text-emerald-600 shrink-0" />
             <span>
-              <strong>Real-time Auto-Sync:</strong> Setiap penambahan transaksi atau akun di website otomatis tersimpan ke Google Sheets. Lembar kerja (sheet) otomatis dibuat & ditambahkan sesuai kebutuhan data.
+              <strong>Real-time Auto-Sync & Auto-Add Sheet:</strong> Ketika ada penambahan fitur, kolom baru, atau perubahan data di modul mana pun, sistem otomatis membuat/menambahkan sheet beserta kolom terbaru di Google Spreadsheet.
             </span>
           </div>
 

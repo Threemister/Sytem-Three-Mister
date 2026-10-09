@@ -457,12 +457,14 @@ export default function MarketplaceCalculator() {
     const updated = [newEntry, ...savedSimulations.slice(0, 9)];
     setSavedSimulations(updated);
     localStorage.setItem('threemister_marketplace_history', JSON.stringify(updated));
+    window.dispatchEvent(new CustomEvent('marketplace_updated'));
   };
 
   const handleDeleteSimulation = (id: string) => {
     const updated = savedSimulations.filter(s => s.id !== id);
     setSavedSimulations(updated);
     localStorage.setItem('threemister_marketplace_history', JSON.stringify(updated));
+    window.dispatchEvent(new CustomEvent('marketplace_updated'));
   };
 
   // Copy Summary to Clipboard

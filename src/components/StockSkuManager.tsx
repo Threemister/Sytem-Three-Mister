@@ -4,7 +4,13 @@
  */
 
 import React, { useState, useEffect, useMemo } from 'react';
-import { InventoryItem, InventoryCategory, InventoryVariantStock, SavedCalculation } from '../types';
+import {
+  InventoryItem,
+  InventoryCategory,
+  InventoryVariantStock,
+  ProductAvailabilityStatus,
+  SavedCalculation
+} from '../types';
 import {
   Tag,
   Plus,
@@ -29,7 +35,8 @@ import {
   ToggleRight,
   Palette,
   Hash,
-  Image as ImageIcon
+  Image as ImageIcon,
+  ShieldAlert
 } from 'lucide-react';
 
 interface StockSkuManagerProps {
@@ -399,7 +406,9 @@ export default function StockSkuManager({
   onNavigateToInventory
 }: StockSkuManagerProps) {
   const [search, setSearch] = useState('');
-  const [availabilityFilter, setAvailabilityFilter] = useState<'ALL' | 'AVAILABLE' | 'UNAVAILABLE'>('ALL');
+  const [availabilityFilter, setAvailabilityFilter] = useState<
+    'ALL' | 'AVAILABLE' | 'UNAVAILABLE' | 'NOT_FOR_SALE'
+  >('ALL');
   const [variantFilter, setVariantFilter] = useState<string>('ALL');
   const [copiedSkuId, setCopiedSkuId] = useState<string | null>(null);
   const [copiedSummary, setCopiedSummary] = useState(false);
@@ -452,7 +461,8 @@ export default function StockSkuManager({
   const [autoSkuEnabled, setAutoSkuEnabled] = useState(true);
 
   const [unit, setUnit] = useState('pcs');
-  const [isProductAvailable, setIsProductAvailable] = useState<boolean>(true);
+  const [productAvailabilityStatus, setProductAvailabilityStatus] =
+    useState<ProductAvailabilityStatus>('available');
   const [totalQty, setTotalQty] = useState<number>(60);
   const [usedOrSoldQty, setUsedOrSoldQty] = useState<number>(0);
   const [location, setLocation] = useState('');
@@ -465,10 +475,27 @@ export default function StockSkuManager({
 
   const [deleteTarget, setDeleteTarget] = useState<InventoryItem | null>(null);
 
-  // Check if an item is effectively available
+  // Determine effective availability status: 'available' | 'unavailable' | 'not_for_sale'
+  const getItemAvailabilityStatus = (item: InventoryItem): ProductAvailabilityStatus => {
+    if (item.availabilityStatus === 'not_for_sale' || item.category === 'internal_use') {
+      return 'not_for_sale';
+    }
+    if (item.availabilityStatus === 'unavailable') {
+      return 'unavailable';
+    }
+    const rem = Math.max(0, item.totalQty - item.usedOrSoldQty);
+    if (item.availabilityStatus === 'available') {
+      return rem > 0 ? 'available' : 'unavailable';
+    }
+    if (item.isAvailable !== undefined) {
+      return item.isAvailable && rem > 0 ? 'available' : 'unavailable';
+    }
+    return rem > 0 ? 'available' : 'unavailable';
+  };
+
+  // Check if an item is effectively available for sale
   const isItemAvailable = (item: InventoryItem): boolean => {
-    if (item.isAvailable !== undefined) return item.isAvailable;
-    return Math.max(0, item.totalQty - item.usedOrSoldQty) > 0;
+    return getItemAvailabilityStatus(item) === 'available';
   };
 
   // Check if a variant is effectively available
@@ -489,20 +516,28 @@ export default function StockSkuManager({
   }, [inventory]);
 
   // Stock & SKU Metrics
+  // "Stock tidak terhitung" comes automatically from products with status "Tidak di jual" ('not_for_sale')
   const stockMetrics = useMemo(() => {
     return inventory.reduce(
       (acc, item) => {
         const rem = Math.max(0, item.totalQty - item.usedOrSoldQty);
-        const available = isItemAvailable(item) && rem > 0;
+        const status = getItemAvailabilityStatus(item);
+
         acc.totalSkuCount += 1;
         acc.totalSubSkuCount += item.variants?.length || 1;
-        acc.totalInQty += item.totalQty;
-        acc.totalOutQty += item.usedOrSoldQty;
-        acc.totalRemainingQty += rem;
-        if (available) {
-          acc.availableProductCount += 1;
+
+        if (status === 'not_for_sale') {
+          acc.notForSaleProductCount += 1;
+          acc.uncountedStockQty += rem;
         } else {
-          acc.unavailableProductCount += 1;
+          acc.totalInQty += item.totalQty;
+          acc.totalOutQty += item.usedOrSoldQty;
+          acc.totalRemainingQty += rem;
+          if (status === 'available') {
+            acc.availableProductCount += 1;
+          } else {
+            acc.unavailableProductCount += 1;
+          }
         }
         return acc;
       },
@@ -512,8 +547,10 @@ export default function StockSkuManager({
         totalInQty: 0,
         totalOutQty: 0,
         totalRemainingQty: 0,
+        uncountedStockQty: 0,
         availableProductCount: 0,
-        unavailableProductCount: 0
+        unavailableProductCount: 0,
+        notForSaleProductCount: 0
       }
     );
   }, [inventory]);
@@ -521,11 +558,11 @@ export default function StockSkuManager({
   // Filtered products
   const filteredItems = useMemo(() => {
     return inventory.filter(item => {
-      const rem = Math.max(0, item.totalQty - item.usedOrSoldQty);
-      const avail = isItemAvailable(item) && rem > 0;
+      const status = getItemAvailabilityStatus(item);
 
-      if (availabilityFilter === 'AVAILABLE' && !avail) return false;
-      if (availabilityFilter === 'UNAVAILABLE' && avail) return false;
+      if (availabilityFilter === 'AVAILABLE' && status !== 'available') return false;
+      if (availabilityFilter === 'UNAVAILABLE' && status !== 'unavailable') return false;
+      if (availabilityFilter === 'NOT_FOR_SALE' && status !== 'not_for_sale') return false;
 
       if (variantFilter !== 'ALL') {
         const hasMatchVariant = item.variants?.some(
@@ -561,15 +598,28 @@ export default function StockSkuManager({
     });
   }, [inventory, availabilityFilter, variantFilter, search]);
 
-  // Toggle Product Availability Directly from Table ("Tersedia" <-> "Tidak Tersedia")
-  const handleToggleProductAvailability = (item: InventoryItem) => {
-    const currentlyAvail = isItemAvailable(item);
-    const nextAvail = !currentlyAvail;
+  // Update Product Availability Status Directly from Table ('available' | 'unavailable' | 'not_for_sale')
+  const handleSetProductStatus = (item: InventoryItem, nextStatus: ProductAvailabilityStatus) => {
+    const rem = Math.max(0, item.totalQty - item.usedOrSoldQty);
     onEditInventory({
       ...item,
-      isAvailable: nextAvail,
+      availabilityStatus: nextStatus,
+      isAvailable: nextStatus === 'available' && rem > 0,
+      category: nextStatus === 'not_for_sale' ? 'internal_use' : 'for_sale',
       updatedAt: new Date().toISOString()
     });
+  };
+
+  // Cycle Product Status when clicking the main status button
+  const handleCycleProductAvailability = (item: InventoryItem) => {
+    const currentStatus = getItemAvailabilityStatus(item);
+    const nextStatus: ProductAvailabilityStatus =
+      currentStatus === 'available'
+        ? 'unavailable'
+        : currentStatus === 'unavailable'
+        ? 'not_for_sale'
+        : 'available';
+    handleSetProductStatus(item, nextStatus);
   };
 
   // Toggle Variant Availability Directly from Table ("Tersedia" <-> "Habis / Tidak Tersedia")
@@ -599,6 +649,7 @@ export default function StockSkuManager({
     const anyVarAvail = updatedVariants.some(
       v => isVariantAvailable(v) && Math.max(0, v.totalQty - v.usedOrSoldQty) > 0
     );
+    const isNotForSale = getItemAvailabilityStatus(item) === 'not_for_sale';
 
     onEditInventory({
       ...item,
@@ -606,7 +657,12 @@ export default function StockSkuManager({
       usedOrSoldQty: newUsedQty,
       remainingQty: newRem,
       totalRemainingValue: newRem * item.unitCost,
-      isAvailable: anyVarAvail,
+      isAvailable: isNotForSale ? false : anyVarAvail,
+      availabilityStatus: isNotForSale
+        ? 'not_for_sale'
+        : anyVarAvail
+        ? 'available'
+        : 'unavailable',
       variants: updatedVariants,
       updatedAt: new Date().toISOString()
     });
@@ -645,6 +701,7 @@ export default function StockSkuManager({
     const newTotalQty = updatedVariants.reduce((s, v) => s + v.totalQty, 0);
     const newUsedQty = updatedVariants.reduce((s, v) => s + v.usedOrSoldQty, 0);
     const newRem = Math.max(0, newTotalQty - newUsedQty);
+    const isNotForSale = getItemAvailabilityStatus(item) === 'not_for_sale';
 
     onEditInventory({
       ...item,
@@ -652,7 +709,12 @@ export default function StockSkuManager({
       usedOrSoldQty: newUsedQty,
       remainingQty: newRem,
       totalRemainingValue: newRem * item.unitCost,
-      isAvailable: newRem > 0,
+      isAvailable: isNotForSale ? false : newRem > 0,
+      availabilityStatus: isNotForSale
+        ? 'not_for_sale'
+        : newRem > 0
+        ? 'available'
+        : 'unavailable',
       variants: updatedVariants,
       updatedAt: new Date().toISOString()
     });
@@ -669,13 +731,20 @@ export default function StockSkuManager({
     const validTotal = Math.max(0, inlineTotalQty);
     const validUsed = Math.max(0, Math.min(validTotal, inlineUsedQty));
     const newRem = Math.max(0, validTotal - validUsed);
+    const isNotForSale = getItemAvailabilityStatus(item) === 'not_for_sale';
+
     onEditInventory({
       ...item,
       totalQty: validTotal,
       usedOrSoldQty: validUsed,
       remainingQty: newRem,
       totalRemainingValue: newRem * item.unitCost,
-      isAvailable: newRem > 0,
+      isAvailable: isNotForSale ? false : newRem > 0,
+      availabilityStatus: isNotForSale
+        ? 'not_for_sale'
+        : newRem > 0
+        ? 'available'
+        : 'unavailable',
       updatedAt: new Date().toISOString()
     });
     setInlineEditingId(null);
@@ -943,7 +1012,7 @@ export default function StockSkuManager({
     setAutoSkuEnabled(true);
 
     setUnit('pcs');
-    setIsProductAvailable(true);
+    setProductAvailabilityStatus('available');
     setLocation('Rak Gudang Utama • Etalase Shopee & TikTok');
     setNotes('');
 
@@ -982,7 +1051,7 @@ export default function StockSkuManager({
     setAutoSkuEnabled(false);
 
     setUnit(item.unit);
-    setIsProductAvailable(isItemAvailable(item));
+    setProductAvailabilityStatus(getItemAvailabilityStatus(item));
     setTotalQty(item.totalQty);
     setUsedOrSoldQty(item.usedOrSoldQty);
     setLocation(item.location || '');
@@ -1013,7 +1082,13 @@ export default function StockSkuManager({
 
     inventory.forEach((item, idx) => {
       const rem = Math.max(0, item.totalQty - item.usedOrSoldQty);
-      const avail = isItemAvailable(item) && rem > 0;
+      const status = getItemAvailabilityStatus(item);
+      const statusLabel =
+        status === 'available'
+          ? '✅ TERSEDIA'
+          : status === 'not_for_sale'
+          ? '🚫 TIDAK DIJUAL (Stock Tidak Terhitung)'
+          : '❌ TIDAK TERSEDIA / HABIS';
       const specSummary = [
         item.productSleeve ? `Produk: ${item.productSleeve}` : '',
         item.designStyle ? `Style: ${item.designStyle}` : '',
@@ -1035,7 +1110,7 @@ export default function StockSkuManager({
       lines.push(
         `${idx + 1}. *[${item.sku}] ${item.name}*`,
         specSummary ? `   • Spesifikasi SKU: ${specSummary}` : '',
-        `   • Status: ${avail ? '✅ TERSEDIA' : '❌ TIDAK TERSEDIA / HABIS'} | Sisa Stok: ${rem} ${item.unit} (Masuk: ${item.totalQty}, Keluar: ${item.usedOrSoldQty})`,
+        `   • Status: ${statusLabel} | Sisa Stok: ${rem} ${item.unit} (Masuk: ${item.totalQty}, Keluar: ${item.usedOrSoldQty})`,
         varDetails ? `   • Ukuran/Varian: ${varDetails}` : ''
       );
     });
@@ -1049,6 +1124,9 @@ export default function StockSkuManager({
     e.preventDefault();
     setFormError('');
 
+    const effectiveCategory: InventoryCategory =
+      productAvailabilityStatus === 'not_for_sale' ? 'internal_use' : category;
+
     const finalSku =
       sku.trim() ||
       generateStructuredSku({
@@ -1057,7 +1135,7 @@ export default function StockSkuManager({
         designGraphic,
         productColor,
         designNumber,
-        category
+        category: effectiveCategory
       });
 
     const finalName =
@@ -1091,11 +1169,11 @@ export default function StockSkuManager({
     }
 
     const remainingQty = Math.max(0, finalTotalQty - finalUsedOrSoldQty);
-    const defaultUnitCost = editingItem ? editingItem.unitCost : category === 'for_sale' ? 60000 : 50000;
-    const defaultSellingPrice = editingItem ? editingItem.sellingPrice || 0 : category === 'for_sale' ? 165000 : 0;
+    const defaultUnitCost = editingItem ? editingItem.unitCost : effectiveCategory === 'for_sale' ? 60000 : 50000;
+    const defaultSellingPrice = editingItem ? editingItem.sellingPrice || 0 : effectiveCategory === 'for_sale' ? 165000 : 0;
     const defaultAccountCode = editingItem
       ? editingItem.accountCode
-      : category === 'for_sale'
+      : effectiveCategory === 'for_sale'
       ? '1-1005'
       : subCategory.toLowerCase().includes('peralatan')
       ? '1-2001'
@@ -1114,6 +1192,13 @@ export default function StockSkuManager({
           })
         : undefined;
 
+    const finalStatus: ProductAvailabilityStatus =
+      productAvailabilityStatus === 'not_for_sale'
+        ? 'not_for_sale'
+        : productAvailabilityStatus === 'available' && remainingQty > 0
+        ? 'available'
+        : 'unavailable';
+
     const newItem: InventoryItem = {
       id: editingItem ? editingItem.id : `INV-${Date.now()}-${Math.floor(Math.random() * 10000)}`,
       sku: finalSku.toUpperCase(),
@@ -1123,13 +1208,14 @@ export default function StockSkuManager({
       designGraphic: designGraphic.trim(),
       productColor: productColor.trim(),
       designNumber: designNumber.trim(),
-      category,
+      category: effectiveCategory,
       subCategory,
       unit: unit.trim() || 'pcs',
       totalQty: finalTotalQty,
       usedOrSoldQty: finalUsedOrSoldQty,
       remainingQty,
-      isAvailable: isProductAvailable && remainingQty > 0,
+      isAvailable: finalStatus === 'available',
+      availabilityStatus: finalStatus,
       unitCost: defaultUnitCost,
       sellingPrice: defaultSellingPrice,
       totalRemainingValue: remainingQty * defaultUnitCost,
@@ -1257,7 +1343,7 @@ export default function StockSkuManager({
           </div>
         </div>
 
-        {/* Card 2: Total Jumlah Produk (Stok Masuk, Keluar, Sisa) */}
+        {/* Card 2: Total Jumlah Produk (Stok Masuk, Keluar, Sisa, Stock Tidak Terhitung) */}
         <div className="bg-white rounded-2xl border border-slate-200 p-5 shadow-xs flex flex-col justify-between space-y-3">
           <div className="flex items-center justify-between">
             <span className="inline-flex items-center gap-1.5 text-[11px] font-black uppercase tracking-wider text-amber-900 bg-amber-100 px-2.5 py-1 rounded-lg">
@@ -1268,7 +1354,7 @@ export default function StockSkuManager({
               Real-time Qty
             </span>
           </div>
-          <div className="grid grid-cols-3 gap-2 text-center pt-1">
+          <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 text-center pt-1">
             <div className="bg-slate-50 p-2 rounded-xl border border-slate-200/80">
               <span className="text-[10px] text-slate-400 block">Stok Masuk</span>
               <span className="font-mono font-bold text-sm text-slate-800">{stockMetrics.totalInQty}</span>
@@ -1280,6 +1366,18 @@ export default function StockSkuManager({
             <div className="bg-amber-50 p-2 rounded-xl border border-amber-300">
               <span className="text-[10px] font-bold text-amber-900 block">Sisa Stock</span>
               <span className="font-mono font-black text-sm text-[#580001]">{stockMetrics.totalRemainingQty}</span>
+            </div>
+            <div
+              onClick={() => setAvailabilityFilter('NOT_FOR_SALE')}
+              className="bg-slate-100 hover:bg-slate-200/80 p-2 rounded-xl border border-slate-300 cursor-pointer transition"
+              title="Otomatis dari produk berstatus Tidak Dijual"
+            >
+              <span className="text-[9px] font-bold text-slate-700 block leading-tight">
+                Stock Tidak Terhitung
+              </span>
+              <span className="font-mono font-black text-sm text-slate-900">
+                {stockMetrics.uncountedStockQty}
+              </span>
             </div>
           </div>
         </div>
@@ -1293,13 +1391,13 @@ export default function StockSkuManager({
             </span>
             <span className="text-[10px] font-semibold text-slate-400">Bisa Di-Edit Langsung</span>
           </div>
-          <div className="grid grid-cols-2 gap-2.5 pt-1">
+          <div className="grid grid-cols-3 gap-2 pt-1">
             <div
               onClick={() => setAvailabilityFilter('AVAILABLE')}
               className="p-2.5 rounded-xl bg-emerald-50/80 border border-emerald-200 cursor-pointer hover:bg-emerald-100/70 transition"
             >
               <span className="text-[10px] font-bold text-emerald-800 block">✅ Produk Tersedia</span>
-              <span className="font-mono font-black text-lg text-emerald-950">
+              <span className="font-mono font-black text-base sm:text-lg text-emerald-950">
                 {stockMetrics.availableProductCount} Produk
               </span>
             </div>
@@ -1308,8 +1406,18 @@ export default function StockSkuManager({
               className="p-2.5 rounded-xl bg-rose-50/80 border border-rose-200 cursor-pointer hover:bg-rose-100/70 transition"
             >
               <span className="text-[10px] font-bold text-rose-800 block">❌ Tidak Tersedia / Habis</span>
-              <span className="font-mono font-black text-lg text-rose-950">
+              <span className="font-mono font-black text-base sm:text-lg text-rose-950">
                 {stockMetrics.unavailableProductCount} Produk
+              </span>
+            </div>
+            <div
+              onClick={() => setAvailabilityFilter('NOT_FOR_SALE')}
+              className="p-2.5 rounded-xl bg-slate-100 border border-slate-300 cursor-pointer hover:bg-slate-200/80 transition"
+              title="Otomatis masuk ke Stock Tidak Terhitung"
+            >
+              <span className="text-[10px] font-bold text-slate-700 block">🚫 Produk Tidak Dijual</span>
+              <span className="font-mono font-black text-base sm:text-lg text-slate-900">
+                {stockMetrics.notForSaleProductCount} Produk
               </span>
             </div>
           </div>
@@ -1358,6 +1466,18 @@ export default function StockSkuManager({
             >
               <Ban className="w-3.5 h-3.5" />
               <span>Tidak Tersedia / Habis ({stockMetrics.unavailableProductCount})</span>
+            </button>
+            <button
+              type="button"
+              onClick={() => setAvailabilityFilter('NOT_FOR_SALE')}
+              className={`px-3 py-1.5 rounded-xl text-xs font-bold transition cursor-pointer flex items-center gap-1.5 ${
+                availabilityFilter === 'NOT_FOR_SALE'
+                  ? 'bg-slate-800 text-white'
+                  : 'bg-slate-100 text-slate-700 border border-slate-300 hover:bg-slate-200'
+              }`}
+            >
+              <ShieldAlert className="w-3.5 h-3.5" />
+              <span>Tidak di jual ({stockMetrics.notForSaleProductCount})</span>
             </button>
 
             {allUniqueVariantNames.length > 0 && (
@@ -1483,33 +1603,88 @@ export default function StockSkuManager({
                         )}
                       </td>
 
-                      {/* 2. Status Tersedia / Tidak Tersedia */}
+                      {/* 2. Status Tersedia / Tidak Tersedia / Produk Tidak Dijual */}
                       <td className="py-4 px-4 text-center">
-                        <button
-                          type="button"
-                          onClick={() => handleToggleProductAvailability(item)}
-                          className={`inline-flex items-center gap-1.5 px-3 py-1.5 rounded-xl text-xs font-bold transition cursor-pointer border shadow-2xs ${
-                            productAvail
-                              ? 'bg-emerald-50 hover:bg-emerald-100 text-emerald-800 border-emerald-300'
-                              : 'bg-rose-50 hover:bg-rose-100 text-rose-700 border-rose-300'
-                          }`}
-                          title="Klik untuk mengubah status Tersedia / Tidak Tersedia"
-                        >
-                          {productAvail ? (
-                            <>
-                              <ToggleRight className="w-4 h-4 text-emerald-600" />
-                              <span>Tersedia</span>
-                            </>
-                          ) : (
-                            <>
-                              <ToggleLeft className="w-4 h-4 text-rose-600" />
-                              <span>Tidak Tersedia</span>
-                            </>
-                          )}
-                        </button>
-                        <div className="text-[10px] text-slate-400 mt-1">
-                          Klik tombol untuk ubah status
-                        </div>
+                        {(() => {
+                          const currentStatus = getItemAvailabilityStatus(item);
+                          return (
+                            <div className="flex flex-col items-center gap-1.5">
+                              <button
+                                type="button"
+                                onClick={() => handleCycleProductAvailability(item)}
+                                className={`inline-flex items-center gap-1.5 px-3 py-1.5 rounded-xl text-xs font-bold transition cursor-pointer border shadow-2xs ${
+                                  currentStatus === 'available'
+                                    ? 'bg-emerald-50 hover:bg-emerald-100 text-emerald-800 border-emerald-300'
+                                    : currentStatus === 'not_for_sale'
+                                    ? 'bg-slate-800 hover:bg-slate-900 text-white border-slate-700'
+                                    : 'bg-rose-50 hover:bg-rose-100 text-rose-700 border-rose-300'
+                                }`}
+                                title="Klik untuk mengubah status ketersediaan"
+                              >
+                                {currentStatus === 'available' ? (
+                                  <>
+                                    <ToggleRight className="w-4 h-4 text-emerald-600" />
+                                    <span>Tersedia</span>
+                                  </>
+                                ) : currentStatus === 'not_for_sale' ? (
+                                  <>
+                                    <ShieldAlert className="w-4 h-4 text-amber-300" />
+                                    <span>Produk Tidak Dijual</span>
+                                  </>
+                                ) : (
+                                  <>
+                                    <ToggleLeft className="w-4 h-4 text-rose-600" />
+                                    <span>Tidak Tersedia</span>
+                                  </>
+                                )}
+                              </button>
+
+                              {/* Quick 3-status selector */}
+                              <div className="inline-flex items-center gap-1 bg-slate-100 p-0.5 rounded-lg border border-slate-200/80">
+                                <button
+                                  type="button"
+                                  onClick={() => handleSetProductStatus(item, 'available')}
+                                  className={`px-1.5 py-0.5 rounded text-[9px] font-bold cursor-pointer transition ${
+                                    currentStatus === 'available'
+                                      ? 'bg-emerald-600 text-white'
+                                      : 'text-slate-500 hover:text-slate-900'
+                                  }`}
+                                >
+                                  Tersedia
+                                </button>
+                                <button
+                                  type="button"
+                                  onClick={() => handleSetProductStatus(item, 'unavailable')}
+                                  className={`px-1.5 py-0.5 rounded text-[9px] font-bold cursor-pointer transition ${
+                                    currentStatus === 'unavailable'
+                                      ? 'bg-rose-600 text-white'
+                                      : 'text-slate-500 hover:text-slate-900'
+                                  }`}
+                                >
+                                  Habis
+                                </button>
+                                <button
+                                  type="button"
+                                  onClick={() => handleSetProductStatus(item, 'not_for_sale')}
+                                  className={`px-1.5 py-0.5 rounded text-[9px] font-bold cursor-pointer transition ${
+                                    currentStatus === 'not_for_sale'
+                                      ? 'bg-slate-800 text-white'
+                                      : 'text-slate-500 hover:text-slate-900'
+                                  }`}
+                                  title="Otomatis masuk ke Stock Tidak Terhitung"
+                                >
+                                  Tidak Dijual
+                                </button>
+                              </div>
+
+                              {currentStatus === 'not_for_sale' && (
+                                <span className="text-[10px] font-semibold text-slate-500">
+                                  Masuk Stock Tidak Terhitung ({remainingQty} {item.unit})
+                                </span>
+                              )}
+                            </div>
+                          );
+                        })()}
                       </td>
 
                       {/* 3. Jumlah Produk + Inline Edit */}
@@ -2055,6 +2230,7 @@ export default function StockSkuManager({
                         const isOp =
                           val.toLowerCase().includes('perlengkapan') || val.toLowerCase().includes('peralatan');
                         const nextCat: InventoryCategory = isOp ? 'internal_use' : 'for_sale';
+                        setProductAvailabilityStatus(isOp ? 'not_for_sale' : 'available');
                         handleSpecFieldChange({ subCategory: val, category: nextCat });
                       }}
                       className="w-full px-3 py-2 border border-slate-200 rounded-xl text-xs bg-white font-semibold"
@@ -2093,27 +2269,56 @@ export default function StockSkuManager({
                     <label className="block text-slate-700 text-[11px] font-bold mb-1 uppercase">
                       Status Ketersediaan Produk
                     </label>
-                    <button
-                      type="button"
-                      onClick={() => setIsProductAvailable(prev => !prev)}
-                      className={`w-full px-3 py-2 rounded-xl text-xs font-bold border flex items-center justify-center gap-2 cursor-pointer transition ${
-                        isProductAvailable
-                          ? 'bg-emerald-600 text-white border-emerald-700'
-                          : 'bg-rose-600 text-white border-rose-700'
-                      }`}
-                    >
-                      {isProductAvailable ? (
-                        <>
-                          <CheckCircle2 className="w-4 h-4" />
-                          <span>✅ Status: Tersedia (Ready)</span>
-                        </>
-                      ) : (
-                        <>
-                          <Ban className="w-4 h-4" />
-                          <span>❌ Status: Tidak Tersedia</span>
-                        </>
-                      )}
-                    </button>
+                    <div className="grid grid-cols-3 gap-1.5">
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setProductAvailabilityStatus('available');
+                          setCategory('for_sale');
+                        }}
+                        className={`px-2 py-2 rounded-xl text-[10px] font-bold border flex items-center justify-center gap-1 cursor-pointer transition ${
+                          productAvailabilityStatus === 'available'
+                            ? 'bg-emerald-600 text-white border-emerald-700'
+                            : 'bg-white hover:bg-emerald-50 text-slate-700 border-slate-200'
+                        }`}
+                      >
+                        <CheckCircle2 className="w-3.5 h-3.5 shrink-0" />
+                        <span>Tersedia</span>
+                      </button>
+
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setProductAvailabilityStatus('unavailable');
+                          setCategory('for_sale');
+                        }}
+                        className={`px-2 py-2 rounded-xl text-[10px] font-bold border flex items-center justify-center gap-1 cursor-pointer transition ${
+                          productAvailabilityStatus === 'unavailable'
+                            ? 'bg-rose-600 text-white border-rose-700'
+                            : 'bg-white hover:bg-rose-50 text-slate-700 border-slate-200'
+                        }`}
+                      >
+                        <Ban className="w-3.5 h-3.5 shrink-0" />
+                        <span>Tidak Tersedia</span>
+                      </button>
+
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setProductAvailabilityStatus('not_for_sale');
+                          setCategory('internal_use');
+                        }}
+                        className={`px-2 py-2 rounded-xl text-[10px] font-bold border flex items-center justify-center gap-1 cursor-pointer transition ${
+                          productAvailabilityStatus === 'not_for_sale'
+                            ? 'bg-slate-800 text-white border-slate-900'
+                            : 'bg-white hover:bg-slate-100 text-slate-700 border-slate-200'
+                        }`}
+                        title="Otomatis masuk ke Stock Tidak Terhitung"
+                      >
+                        <ShieldAlert className="w-3.5 h-3.5 shrink-0" />
+                        <span>Tidak Dijual</span>
+                      </button>
+                    </div>
                   </div>
                 </div>
               </div>

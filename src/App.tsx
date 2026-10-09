@@ -4,7 +4,7 @@
  */
 
 import { useState, useEffect, useRef } from 'react';
-import { Account, Transaction, FinanceNotification, SavedCalculation, FinancialSummaryData, SaleOrder, InventoryItem } from './types';
+import { Account, Transaction, FinanceNotification, SavedCalculation, FinancialSummaryData, SaleOrder, InventoryItem, MarketplacePricingHistory } from './types';
 import { defaultAccounts, defaultTransactions, defaultSales, defaultInventory } from './defaultData';
 import { initAuth, googleSignIn, logout, getAccessToken, clearExpiredToken } from './firebase';
 import { 
@@ -16,6 +16,9 @@ import {
   pullTransactionsFromSheets,
   pushHPPToSheets,
   pullHPPFromSheets,
+  pullInventoryFromSheets,
+  pullSalesFromSheets,
+  pullMarketplaceHistoryFromSheets,
   pushSummaryToSheets,
   pushAllDataToSheets
 } from './sheets';
@@ -438,7 +441,12 @@ export default function App() {
   };
 
   // ================= FINANCIAL SUMMARY & HPP STORAGE HELPERS =================
-  const computeFinancialSummary = (accList: Account[], txList: Transaction[]): FinancialSummaryData => {
+  const computeFinancialSummary = (
+    accList: Account[],
+    txList: Transaction[],
+    invList: InventoryItem[] = inventory,
+    salesList: SaleOrder[] = sales
+  ): FinancialSummaryData => {
     const balances: { [code: string]: number } = {};
     accList.forEach(acc => {
       let debits = 0;
@@ -516,6 +524,51 @@ export default function App() {
     const trialBalanceDiff = Math.abs(totalTrialDebit - totalTrialCredit);
     const isTrialBalanced = trialBalanceDiff < 1;
 
+    // Additional feature metrics (Stock & SKU, Inventory, Penjualan)
+    let totalInventoryForSaleValue = 0;
+    let totalInventoryInternalValue = 0;
+    let totalStockAvailableProducts = 0;
+    let totalStockUnavailableProducts = 0;
+    let totalStockNotForSaleProducts = 0;
+    let totalStockCountedPcs = 0;
+    let totalStockUncountedPcs = 0;
+
+    invList.forEach(item => {
+      const rem = Math.max(0, item.totalQty - item.usedOrSoldQty);
+      const val = rem * (item.unitCost || 0);
+      if (item.category === 'for_sale') {
+        totalInventoryForSaleValue += val;
+      } else {
+        totalInventoryInternalValue += val;
+      }
+
+      const status = item.availabilityStatus
+        ? item.availabilityStatus
+        : item.category === 'internal_use'
+        ? 'not_for_sale'
+        : (item.isAvailable !== undefined ? item.isAvailable && rem > 0 : rem > 0)
+        ? 'available'
+        : 'unavailable';
+
+      if (status === 'not_for_sale') {
+        totalStockNotForSaleProducts += 1;
+        totalStockUncountedPcs += rem;
+      } else if (status === 'available' && rem > 0) {
+        totalStockAvailableProducts += 1;
+        totalStockCountedPcs += rem;
+      } else {
+        totalStockUnavailableProducts += 1;
+        totalStockCountedPcs += rem;
+      }
+    });
+
+    const pendingSales = salesList.filter(s => s.status === 'pending');
+    const settledSales = salesList.filter(s => s.status === 'settled');
+    const totalPendingSalesCount = pendingSales.length;
+    const totalPendingSalesNet = pendingSales.reduce((s, o) => s + o.netPayout, 0);
+    const totalSettledSalesCount = settledSales.length;
+    const totalSettledSalesNet = settledSales.reduce((s, o) => s + o.netPayout, 0);
+
     const now = new Date();
     const lastUpdated = now.toLocaleDateString('id-ID', {
       day: 'numeric',
@@ -539,7 +592,18 @@ export default function App() {
       totalEquity,
       isTrialBalanced,
       trialBalanceDiff,
-      lastUpdated
+      lastUpdated,
+      totalInventoryForSaleValue,
+      totalInventoryInternalValue,
+      totalStockAvailableProducts,
+      totalStockUnavailableProducts,
+      totalStockNotForSaleProducts,
+      totalStockCountedPcs,
+      totalStockUncountedPcs,
+      totalPendingSalesCount,
+      totalPendingSalesNet,
+      totalSettledSalesCount,
+      totalSettledSalesNet
     };
   };
 
@@ -556,11 +620,30 @@ export default function App() {
     return [];
   };
 
+  const getLocalMarketplaceHistory = (): MarketplacePricingHistory[] => {
+    try {
+      const saved = localStorage.getItem('threemister_marketplace_history');
+      if (saved) {
+        const parsed = JSON.parse(saved);
+        if (Array.isArray(parsed)) return parsed;
+      }
+    } catch (e) {
+      console.warn('Notice parsing Marketplace History from localStorage:', e);
+    }
+    return [];
+  };
+
   // ================= REAL-TIME DEBOUNCED AUTO-SYNC TO GOOGLE SHEETS =================
   const autoSyncTimeoutRef = useRef<NodeJS.Timeout | null>(null);
+  const hasInitialSheetSyncRef = useRef<string | null>(null);
 
-  const triggerAutoSync = (updatedAccs?: Account[], updatedTxs?: Transaction[]) => {
-    if (!oauthToken || !spreadsheetId) return;
+  const triggerAutoSync = (
+    updatedAccs?: Account[],
+    updatedTxs?: Transaction[],
+    updatedSales?: SaleOrder[],
+    updatedInv?: InventoryItem[]
+  ) => {
+    if (!oauthToken || oauthToken === 'offline-demo-token' || !spreadsheetId) return;
 
     if (autoSyncTimeoutRef.current) {
       clearTimeout(autoSyncTimeoutRef.current);
@@ -569,18 +652,35 @@ export default function App() {
     autoSyncTimeoutRef.current = setTimeout(async () => {
       const accsToSync = updatedAccs || accounts;
       const txsToSync = updatedTxs || transactions;
+      const salesToSync = updatedSales || sales;
+      const invToSync = updatedInv || inventory;
       const hppToSync = getLocalHPP();
-      const summary = computeFinancialSummary(accsToSync, txsToSync);
+      const mpHistoryToSync = getLocalMarketplaceHistory();
+      const summary = computeFinancialSummary(accsToSync, txsToSync, invToSync, salesToSync);
 
       try {
         setIsSyncing(true);
-        await pushAllDataToSheets(spreadsheetId, {
-          accounts: accsToSync,
-          transactions: txsToSync,
-          hppCalcs: hppToSync,
-          summary
-        }, oauthToken);
+        const { addedSheets } = await pushAllDataToSheets(
+          spreadsheetId,
+          {
+            accounts: accsToSync,
+            transactions: txsToSync,
+            sales: salesToSync,
+            inventory: invToSync,
+            hppCalcs: hppToSync,
+            marketplaceHistory: mpHistoryToSync,
+            summary
+          },
+          oauthToken
+        );
         setSyncError(null);
+        if (addedSheets && addedSheets.length > 0) {
+          addNotification(
+            '✨ Sheet Fitur Baru Otomatis Ditambahkan',
+            `Lembar kerja baru (${addedSheets.join(', ')}) telah otomatis dibuat dan disinkronkan ke Google Spreadsheet Anda.`,
+            'success'
+          );
+        }
       } catch (err: any) {
         console.warn('Auto-sync to sheets note:', err.message);
         if (err.message?.includes('403') || err.message?.includes('401') || err.message?.includes('Izin Google Sheets')) {
@@ -594,30 +694,73 @@ export default function App() {
     }, 1200);
   };
 
-  // Listen to HPP updates across the app
+  // Automatically ensure all feature sheets exist & sync when connected to Google Sheets
   useEffect(() => {
-    const handleHPPUpdate = () => {
+    if (
+      oauthToken &&
+      oauthToken !== 'offline-demo-token' &&
+      spreadsheetId &&
+      accounts.length > 0 &&
+      hasInitialSheetSyncRef.current !== `${spreadsheetId}-${oauthToken}`
+    ) {
+      hasInitialSheetSyncRef.current = `${spreadsheetId}-${oauthToken}`;
+      triggerAutoSync(accounts, transactions, sales, inventory);
+    }
+  }, [oauthToken, spreadsheetId, accounts.length]);
+
+  // Listen to HPP & Marketplace Pricing updates across the app
+  useEffect(() => {
+    const handleFeatureStorageUpdate = () => {
       triggerAutoSync();
     };
-    window.addEventListener('hpp_updated', handleHPPUpdate);
-    return () => window.removeEventListener('hpp_updated', handleHPPUpdate);
-  }, [oauthToken, spreadsheetId, accounts, transactions]);
+    window.addEventListener('hpp_updated', handleFeatureStorageUpdate);
+    window.addEventListener('marketplace_updated', handleFeatureStorageUpdate);
+    return () => {
+      window.removeEventListener('hpp_updated', handleFeatureStorageUpdate);
+      window.removeEventListener('marketplace_updated', handleFeatureStorageUpdate);
+    };
+  }, [oauthToken, spreadsheetId, accounts, transactions, sales, inventory]);
 
-  // ================= FINANCIAL STATE MUTATORS (LOCAL) =================
-  const handleAddAccount = (newAcc: Account) => {
-    const updated = [...accounts, newAcc];
-    setAccounts(updated);
-    localStorage.setItem('finance_accounts', JSON.stringify(updated));
-    addNotification('Akun Ditambahkan', `Akun baru [${newAcc.code}] "${newAcc.name}" telah terdaftar ke sistem.`, 'info');
-    triggerAutoSync(updated, transactions);
+  // Helper to compare account codes naturally (e.g. 1-1001 < 1-1002 < 2-1001)
+  const compareAccountCodes = (codeA: string, codeB: string) => {
+    return codeA.localeCompare(codeB, undefined, { numeric: true, sensitivity: 'base' });
   };
 
-  const handleEditAccount = (updatedAcc: Account) => {
-    const updated = accounts.map(a => a.code === updatedAcc.code ? updatedAcc : a);
+  // ================= FINANCIAL STATE MUTATORS (LOCAL) =================
+  const handleAddAccount = (newAcc: Account, autoSortByCode = true) => {
+    let updated = [...accounts, newAcc];
+    if (autoSortByCode) {
+      updated = [...updated].sort((a, b) => compareAccountCodes(a.code, b.code));
+    }
+    setAccounts(updated);
+    localStorage.setItem('finance_accounts', JSON.stringify(updated));
+    addNotification(
+      'Akun Ditambahkan',
+      `Akun baru [${newAcc.code}] "${newAcc.name}" telah terdaftar${autoSortByCode ? ' dan diurutkan otomatis sesuai kode akun' : ''}.`,
+      'info'
+    );
+    triggerAutoSync(updated, transactions, sales, inventory);
+  };
+
+  const handleEditAccount = (updatedAcc: Account, originalCode?: string, autoSortByCode = false) => {
+    const targetCode = originalCode || updatedAcc.code;
+    let updated = accounts.map(a => a.code === targetCode ? updatedAcc : a);
+    if (autoSortByCode) {
+      updated = [...updated].sort((a, b) => compareAccountCodes(a.code, b.code));
+    }
     setAccounts(updated);
     localStorage.setItem('finance_accounts', JSON.stringify(updated));
     addNotification('Akun Diupdate', `Informasi akun [${updatedAcc.code}] "${updatedAcc.name}" berhasil diubah.`, 'info');
-    triggerAutoSync(updated, transactions);
+    triggerAutoSync(updated, transactions, sales, inventory);
+  };
+
+  const handleReorderAccounts = (reordered: Account[], customNotice?: string) => {
+    setAccounts(reordered);
+    localStorage.setItem('finance_accounts', JSON.stringify(reordered));
+    if (customNotice) {
+      addNotification('Urutan Akun Diperbarui', customNotice, 'info');
+    }
+    triggerAutoSync(reordered, transactions, sales, inventory);
   };
 
   const handleDeleteAccount = (code: string) => {
@@ -628,7 +771,7 @@ export default function App() {
     if (accToDelete) {
       addNotification('Akun Dihapus', `Akun [${code}] "${accToDelete.name}" telah dihapus secara permanen.`, 'warning');
     }
-    triggerAutoSync(updated, transactions);
+    triggerAutoSync(updated, transactions, sales, inventory);
   };
 
   const handleAddTransaction = (newTx: Transaction | Transaction[]) => {
@@ -637,7 +780,7 @@ export default function App() {
       const updated = [...txList, ...prev];
       localStorage.setItem('finance_transactions', JSON.stringify(updated));
       checkFinancialTriggers(updated, accounts);
-      triggerAutoSync(accounts, updated);
+      triggerAutoSync(accounts, updated, sales, inventory);
       return updated;
     });
   };
@@ -648,7 +791,7 @@ export default function App() {
     localStorage.setItem('finance_transactions', JSON.stringify(updated));
     addNotification('Transaksi Diubah', `Transaksi No Ref ${updatedTx.refNum} berhasil direvisi di dashboard admin.`, 'info');
     checkFinancialTriggers(updated, accounts);
-    triggerAutoSync(accounts, updated);
+    triggerAutoSync(accounts, updated, sales, inventory);
   };
 
   const handleDeleteTransaction = (id: string) => {
@@ -664,31 +807,28 @@ export default function App() {
       );
     }
     checkFinancialTriggers(updated, accounts);
-    triggerAutoSync(accounts, updated);
+    triggerAutoSync(accounts, updated, sales, inventory);
   };
 
   // ================= SALES & PENDING ESCROW MUTATORS =================
   const handleAddSale = (newSale: SaleOrder, autoTransactions?: Transaction[]) => {
-    setSales(prev => {
-      const updatedSales = [newSale, ...prev];
-      localStorage.setItem('finance_sales', JSON.stringify(updatedSales));
-      return updatedSales;
-    });
+    const updatedSales = [newSale, ...sales];
+    setSales(updatedSales);
+    localStorage.setItem('finance_sales', JSON.stringify(updatedSales));
 
     if (autoTransactions && autoTransactions.length > 0) {
-      setTransactions(prev => {
-        const updatedTxs = [...autoTransactions, ...prev];
-        localStorage.setItem('finance_transactions', JSON.stringify(updatedTxs));
-        checkFinancialTriggers(updatedTxs, accounts);
-        triggerAutoSync(accounts, updatedTxs);
-        return updatedTxs;
-      });
+      const updatedTxs = [...autoTransactions, ...transactions];
+      setTransactions(updatedTxs);
+      localStorage.setItem('finance_transactions', JSON.stringify(updatedTxs));
+      checkFinancialTriggers(updatedTxs, accounts);
+      triggerAutoSync(accounts, updatedTxs, updatedSales, inventory);
       addNotification(
         '✅ Penjualan Langsung Cair & Dijurnal',
         `Penjualan ${newSale.invoiceNum} (${newSale.channel}) senilai bersih ${formatIDR(newSale.netPayout)} otomatis tercatat ke Transaksi Keuangan & Jurnal Umum.`,
         'success'
       );
     } else {
+      triggerAutoSync(accounts, transactions, updatedSales, inventory);
       addNotification(
         '⏳ Penjualan Pending Disimpan',
         `Pesanan ${newSale.invoiceNum} (${newSale.channel}) senilai bersih ${formatIDR(newSale.netPayout)} disimpan di daftar Pending. Lepas pending saat dana cair untuk otomatis masuk ke Jurnal Umum.`,
@@ -698,11 +838,10 @@ export default function App() {
   };
 
   const handleEditSale = (updatedSale: SaleOrder) => {
-    setSales(prev => {
-      const updated = prev.map(s => s.id === updatedSale.id ? updatedSale : s);
-      localStorage.setItem('finance_sales', JSON.stringify(updated));
-      return updated;
-    });
+    const updatedSales = sales.map(s => s.id === updatedSale.id ? updatedSale : s);
+    setSales(updatedSales);
+    localStorage.setItem('finance_sales', JSON.stringify(updatedSales));
+    triggerAutoSync(accounts, transactions, updatedSales, inventory);
     addNotification(
       'Penjualan Diperbarui',
       `Data pesanan penjualan ${updatedSale.invoiceNum} berhasil diperbarui.`,
@@ -712,21 +851,19 @@ export default function App() {
 
   const handleDeleteSale = (saleId: string, removeLinkedTransactions = true) => {
     const targetSale = sales.find(s => s.id === saleId);
-    setSales(prev => {
-      const updated = prev.filter(s => s.id !== saleId);
-      localStorage.setItem('finance_sales', JSON.stringify(updated));
-      return updated;
-    });
+    const updatedSales = sales.filter(s => s.id !== saleId);
+    setSales(updatedSales);
+    localStorage.setItem('finance_sales', JSON.stringify(updatedSales));
 
+    let updatedTxs = transactions;
     if (removeLinkedTransactions && targetSale?.linkedTransactionIds && targetSale.linkedTransactionIds.length > 0) {
       const linkedSet = new Set(targetSale.linkedTransactionIds);
-      setTransactions(prev => {
-        const updatedTxs = prev.filter(t => !linkedSet.has(t.id) && t.refNum !== targetSale.invoiceNum && t.refNum !== `FEE-${targetSale.invoiceNum}` && t.refNum !== `HPP-${targetSale.invoiceNum}`);
-        localStorage.setItem('finance_transactions', JSON.stringify(updatedTxs));
-        triggerAutoSync(accounts, updatedTxs);
-        return updatedTxs;
-      });
+      updatedTxs = transactions.filter(t => !linkedSet.has(t.id) && t.refNum !== targetSale.invoiceNum && t.refNum !== `FEE-${targetSale.invoiceNum}` && t.refNum !== `HPP-${targetSale.invoiceNum}`);
+      setTransactions(updatedTxs);
+      localStorage.setItem('finance_transactions', JSON.stringify(updatedTxs));
     }
+
+    triggerAutoSync(accounts, updatedTxs, updatedSales, inventory);
 
     if (targetSale) {
       addNotification(
@@ -821,36 +958,32 @@ export default function App() {
       linkedMap[sale.id] = txIdsForThisSale;
     });
 
-    setSales(prev => {
-      const updatedSales = prev.map(s => {
-        if (idSet.has(s.id) && s.status === 'pending') {
-          return {
-            ...s,
-            status: 'settled' as const,
-            settledDate: releaseConfig.settledDate,
-            targetAccountCode: releaseConfig.targetAccountCode,
-            revenueAccountCode: releaseConfig.revenueAccountCode,
-            feeAccountCode: releaseConfig.feeAccountCode,
-            recordFeeSeparately: releaseConfig.recordFeeSeparately,
-            recordHppAuto: releaseConfig.recordHppAuto,
-            hppDebitAccountCode: releaseConfig.hppDebitAccountCode,
-            hppCreditAccountCode: releaseConfig.hppCreditAccountCode,
-            linkedTransactionIds: linkedMap[s.id] || []
-          };
-        }
-        return s;
-      });
-      localStorage.setItem('finance_sales', JSON.stringify(updatedSales));
-      return updatedSales;
+    const updatedSales = sales.map(s => {
+      if (idSet.has(s.id) && s.status === 'pending') {
+        return {
+          ...s,
+          status: 'settled' as const,
+          settledDate: releaseConfig.settledDate,
+          targetAccountCode: releaseConfig.targetAccountCode,
+          revenueAccountCode: releaseConfig.revenueAccountCode,
+          feeAccountCode: releaseConfig.feeAccountCode,
+          recordFeeSeparately: releaseConfig.recordFeeSeparately,
+          recordHppAuto: releaseConfig.recordHppAuto,
+          hppDebitAccountCode: releaseConfig.hppDebitAccountCode,
+          hppCreditAccountCode: releaseConfig.hppCreditAccountCode,
+          linkedTransactionIds: linkedMap[s.id] || []
+        };
+      }
+      return s;
     });
+    setSales(updatedSales);
+    localStorage.setItem('finance_sales', JSON.stringify(updatedSales));
 
-    setTransactions(prev => {
-      const updatedTxs = [...newTransactions, ...prev];
-      localStorage.setItem('finance_transactions', JSON.stringify(updatedTxs));
-      checkFinancialTriggers(updatedTxs, accounts);
-      triggerAutoSync(accounts, updatedTxs);
-      return updatedTxs;
-    });
+    const updatedTxs = [...newTransactions, ...transactions];
+    setTransactions(updatedTxs);
+    localStorage.setItem('finance_transactions', JSON.stringify(updatedTxs));
+    checkFinancialTriggers(updatedTxs, accounts);
+    triggerAutoSync(accounts, updatedTxs, updatedSales, inventory);
 
     const totalNetReleased = salesToRelease.reduce((sum, s) => sum + s.netPayout, 0);
     addNotification(
@@ -865,28 +998,25 @@ export default function App() {
     if (!targetSale) return;
 
     const linkedSet = new Set(targetSale.linkedTransactionIds || []);
-    setTransactions(prev => {
-      const updatedTxs = prev.filter(
-        t =>
-          !linkedSet.has(t.id) &&
-          t.refNum !== targetSale.invoiceNum &&
-          t.refNum !== `FEE-${targetSale.invoiceNum}` &&
-          t.refNum !== `HPP-${targetSale.invoiceNum}`
-      );
-      localStorage.setItem('finance_transactions', JSON.stringify(updatedTxs));
-      triggerAutoSync(accounts, updatedTxs);
-      return updatedTxs;
-    });
+    const updatedTxs = transactions.filter(
+      t =>
+        !linkedSet.has(t.id) &&
+        t.refNum !== targetSale.invoiceNum &&
+        t.refNum !== `FEE-${targetSale.invoiceNum}` &&
+        t.refNum !== `HPP-${targetSale.invoiceNum}`
+    );
+    setTransactions(updatedTxs);
+    localStorage.setItem('finance_transactions', JSON.stringify(updatedTxs));
 
-    setSales(prev => {
-      const updatedSales = prev.map(s =>
-        s.id === saleId
-          ? { ...s, status: 'pending' as const, settledDate: undefined, linkedTransactionIds: [] }
-          : s
-      );
-      localStorage.setItem('finance_sales', JSON.stringify(updatedSales));
-      return updatedSales;
-    });
+    const updatedSales = sales.map(s =>
+      s.id === saleId
+        ? { ...s, status: 'pending' as const, settledDate: undefined, linkedTransactionIds: [] }
+        : s
+    );
+    setSales(updatedSales);
+    localStorage.setItem('finance_sales', JSON.stringify(updatedSales));
+
+    triggerAutoSync(accounts, updatedTxs, updatedSales, inventory);
 
     addNotification(
       '↩️ Penjualan Dikembalikan ke Pending',
@@ -949,7 +1079,7 @@ export default function App() {
     const updatedAccs = syncInventoryToAccounts(accounts, updatedInv);
     setAccounts(updatedAccs);
     localStorage.setItem('finance_accounts', JSON.stringify(updatedAccs));
-    triggerAutoSync(updatedAccs, transactions);
+    triggerAutoSync(updatedAccs, transactions, sales, updatedInv);
 
     addNotification(
       '📦 Barang Inventory Ditambahkan',
@@ -966,7 +1096,7 @@ export default function App() {
     const updatedAccs = syncInventoryToAccounts(accounts, updatedInv);
     setAccounts(updatedAccs);
     localStorage.setItem('finance_accounts', JSON.stringify(updatedAccs));
-    triggerAutoSync(updatedAccs, transactions);
+    triggerAutoSync(updatedAccs, transactions, sales, updatedInv);
   };
 
   const handleDeleteInventory = (id: string) => {
@@ -978,7 +1108,7 @@ export default function App() {
     const updatedAccs = syncInventoryToAccounts(accounts, updatedInv);
     setAccounts(updatedAccs);
     localStorage.setItem('finance_accounts', JSON.stringify(updatedAccs));
-    triggerAutoSync(updatedAccs, transactions);
+    triggerAutoSync(updatedAccs, transactions, sales, updatedInv);
 
     if (target) {
       addNotification(
@@ -1004,7 +1134,7 @@ export default function App() {
       'Daftar akun, inventory, penjualan, dan transaksi contoh telah di-reset ke data bawaan baru.',
       'success'
     );
-    triggerAutoSync(syncedDefaultAccounts, defaultTransactions);
+    triggerAutoSync(syncedDefaultAccounts, defaultTransactions, defaultSales, defaultInventory);
   };
 
   // Mark all notifications as read
@@ -1146,7 +1276,7 @@ export default function App() {
   };
 
   const handleCreateNewSheet = async () => {
-    if (!oauthToken) {
+    if (!oauthToken || oauthToken === 'offline-demo-token') {
       setSyncError('Silakan otorisasi akun Google Anda terlebih dahulu.');
       return;
     }
@@ -1161,17 +1291,21 @@ export default function App() {
       localStorage.setItem('finance_spreadsheet_id', newId);
 
       const hppCalcs = getLocalHPP();
-      const summary = computeFinancialSummary(accounts, transactions);
+      const marketplaceHistory = getLocalMarketplaceHistory();
+      const summary = computeFinancialSummary(accounts, transactions, inventory, sales);
       await pushAllDataToSheets(newId, {
         accounts,
         transactions,
+        sales,
+        inventory,
         hppCalcs,
+        marketplaceHistory,
         summary,
       }, oauthToken);
 
       addNotification(
         'Google Sheet Berhasil Dibuat!',
-        'Spreadsheet baru dibuat di Google Drive Anda dengan 4 sheet (AKUN, TRANSAKSI, HPP_PRODUK, RINGKASAN_KEUANGAN) dan data langsung terisi.',
+        'Spreadsheet baru dibuat di Google Drive Anda dengan seluruh sheet fitur (AKUN, STOCK_SKU, INVENTORY, PENJUALAN, TRANSAKSI, HPP_PRODUK, HARGA_MARKETPLACE, RINGKASAN_KEUANGAN) dan data langsung terisi.',
         'success'
       );
     } catch (err: any) {
@@ -1190,23 +1324,28 @@ export default function App() {
   };
 
   const handleInitializeSheets = async () => {
-    if (!oauthToken) return;
+    if (!oauthToken || oauthToken === 'offline-demo-token') return;
     setIsSyncing(true);
     setSyncError(null);
     try {
-      await ensureSheetsExist(spreadsheetId, oauthToken);
       const hppCalcs = getLocalHPP();
-      const summary = computeFinancialSummary(accounts, transactions);
-      await pushAllDataToSheets(spreadsheetId, {
+      const marketplaceHistory = getLocalMarketplaceHistory();
+      const summary = computeFinancialSummary(accounts, transactions, inventory, sales);
+      const { addedSheets } = await pushAllDataToSheets(spreadsheetId, {
         accounts,
         transactions,
+        sales,
+        inventory,
         hppCalcs,
+        marketplaceHistory,
         summary,
       }, oauthToken);
 
       addNotification(
         'Inisialisasi & Sinkronisasi Sukses',
-        'Lembar kerja (AKUN, TRANSAKSI, HPP_PRODUK, RINGKASAN_KEUANGAN) telah dipastikan lengkap dan data sinkron.',
+        addedSheets.length > 0
+          ? `Sheet fitur baru (${addedSheets.join(', ')}) telah otomatis ditambahkan dan seluruh data telah disinkronkan.`
+          : 'Seluruh 8 lembar kerja fitur (AKUN, STOCK_SKU, INVENTORY, PENJUALAN, TRANSAKSI, HPP_PRODUK, HARGA_MARKETPLACE, RINGKASAN_KEUANGAN) telah lengkap dan data sinkron.',
         'success'
       );
     } catch (err: any) {
@@ -1224,7 +1363,7 @@ export default function App() {
   };
 
   const handlePushToSheets = async () => {
-    if (!oauthToken) {
+    if (!oauthToken || oauthToken === 'offline-demo-token') {
       setSyncError('Silakan otorisasi akun Google Anda terlebih dahulu.');
       return;
     }
@@ -1236,17 +1375,21 @@ export default function App() {
     setSyncError(null);
     try {
       const hppCalcs = getLocalHPP();
-      const summary = computeFinancialSummary(accounts, transactions);
-      await pushAllDataToSheets(spreadsheetId, {
+      const marketplaceHistory = getLocalMarketplaceHistory();
+      const summary = computeFinancialSummary(accounts, transactions, inventory, sales);
+      const { addedSheets } = await pushAllDataToSheets(spreadsheetId, {
         accounts,
         transactions,
+        sales,
+        inventory,
         hppCalcs,
+        marketplaceHistory,
         summary,
       }, oauthToken);
 
       addNotification(
         'Data Tersimpan ke Sheets',
-        `Berhasil menyimpan ${accounts.length} Akun, ${transactions.length} Transaksi, ${hppCalcs.length} HPP Produk, dan Ringkasan Keuangan ke Google Sheets.`,
+        `Berhasil menyimpan ${accounts.length} Akun, ${inventory.length} Stock SKU & Inventory, ${sales.length} Penjualan, ${transactions.length} Transaksi, ${hppCalcs.length} HPP Produk, dan Ringkasan Keuangan ke Google Sheets${addedSheets.length > 0 ? ` (Sheet baru otomatis ditambahkan: ${addedSheets.join(', ')})` : ''}.`,
         'success'
       );
     } catch (err: any) {
@@ -1265,7 +1408,7 @@ export default function App() {
   };
 
   const handlePullFromSheets = async (bypassConfirm = false) => {
-    if (!oauthToken) {
+    if (!oauthToken || oauthToken === 'offline-demo-token') {
       setSyncError('Silakan otorisasi akun Google terlebih dahulu.');
       return;
     }
@@ -1282,30 +1425,69 @@ export default function App() {
     setIsSyncing(true);
     setSyncError(null);
     try {
-      const pulledAccounts = await pullAccountsFromSheets(spreadsheetId, oauthToken);
-      const pulledTransactions = await pullTransactionsFromSheets(spreadsheetId, oauthToken);
-      const pulledHPP = await pullHPPFromSheets(spreadsheetId, oauthToken);
+      await ensureSheetsExist(spreadsheetId, oauthToken);
 
-      if (pulledAccounts.length === 0 && pulledTransactions.length === 0 && pulledHPP.length === 0) {
+      const [
+        pulledAccounts,
+        pulledTransactions,
+        pulledHPP,
+        pulledInventory,
+        pulledSales,
+        pulledMarketplace
+      ] = await Promise.all([
+        pullAccountsFromSheets(spreadsheetId, oauthToken),
+        pullTransactionsFromSheets(spreadsheetId, oauthToken),
+        pullHPPFromSheets(spreadsheetId, oauthToken),
+        pullInventoryFromSheets(spreadsheetId, oauthToken),
+        pullSalesFromSheets(spreadsheetId, oauthToken),
+        pullMarketplaceHistoryFromSheets(spreadsheetId, oauthToken)
+      ]);
+
+      if (
+        pulledAccounts.length === 0 &&
+        pulledTransactions.length === 0 &&
+        pulledHPP.length === 0 &&
+        pulledInventory.length === 0 &&
+        pulledSales.length === 0
+      ) {
         throw new Error('Spreadsheet kosong atau lembar kerja belum memiliki baris data.');
       }
 
-      if (pulledAccounts.length > 0) {
-        setAccounts(pulledAccounts);
-        localStorage.setItem('finance_accounts', JSON.stringify(pulledAccounts));
+      const finalInventory = pulledInventory.length > 0 ? pulledInventory : inventory;
+      if (pulledInventory.length > 0) {
+        setInventory(pulledInventory);
+        localStorage.setItem('finance_inventory', JSON.stringify(pulledInventory));
       }
+
+      if (pulledAccounts.length > 0) {
+        const syncedPulledAccounts = syncInventoryToAccounts(pulledAccounts, finalInventory);
+        setAccounts(syncedPulledAccounts);
+        localStorage.setItem('finance_accounts', JSON.stringify(syncedPulledAccounts));
+      }
+
+      if (pulledSales.length > 0) {
+        setSales(pulledSales);
+        localStorage.setItem('finance_sales', JSON.stringify(pulledSales));
+      }
+
       if (pulledTransactions.length > 0) {
         setTransactions(pulledTransactions);
         localStorage.setItem('finance_transactions', JSON.stringify(pulledTransactions));
       }
+
       if (pulledHPP.length > 0) {
         localStorage.setItem('threemister_hpp_calcs', JSON.stringify(pulledHPP));
         window.dispatchEvent(new CustomEvent('hpp_updated'));
       }
 
+      if (pulledMarketplace.length > 0) {
+        localStorage.setItem('threemister_marketplace_history', JSON.stringify(pulledMarketplace));
+        window.dispatchEvent(new CustomEvent('marketplace_updated'));
+      }
+
       addNotification(
         'Unduh Data Berhasil',
-        `Berhasil mengunduh data awan: ${pulledAccounts.length} Akun, ${pulledTransactions.length} Transaksi, dan ${pulledHPP.length} HPP Produk telah dimuat.`,
+        `Berhasil mengunduh data awan: ${pulledAccounts.length} Akun, ${pulledInventory.length} Stock SKU & Inventory, ${pulledSales.length} Penjualan, ${pulledTransactions.length} Transaksi, dan ${pulledHPP.length} HPP Produk telah dimuat.`,
         'success'
       );
     } catch (err: any) {
@@ -2260,6 +2442,7 @@ export default function App() {
               onAddAccount={handleAddAccount}
               onEditAccount={handleEditAccount}
               onDeleteAccount={handleDeleteAccount}
+              onReorderAccounts={handleReorderAccounts}
               onResetToDefaults={handleResetToDefaults}
               onNavigateToInventory={() => setCurrentScreen('inventory')}
             />

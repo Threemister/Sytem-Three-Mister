@@ -143,6 +143,28 @@ export interface FinancialSummaryData {
   isTrialBalanced: boolean;
   trialBalanceDiff: number;
   lastUpdated: string;
+  // Additional feature metrics automatically synced to RINGKASAN_KEUANGAN
+  totalInventoryForSaleValue?: number;
+  totalInventoryInternalValue?: number;
+  totalStockAvailableProducts?: number;
+  totalStockUnavailableProducts?: number;
+  totalStockNotForSaleProducts?: number;
+  totalStockCountedPcs?: number;
+  totalStockUncountedPcs?: number;
+  totalPendingSalesCount?: number;
+  totalPendingSalesNet?: number;
+  totalSettledSalesCount?: number;
+  totalSettledSalesNet?: number;
+}
+
+export interface MarketplacePricingHistory {
+  id: string;
+  productName: string;
+  hpp: number;
+  mode: 'target' | 'simulate';
+  targetProfit: number;
+  sellingPrice: number;
+  date: string;
 }
 
 export type SaleChannel =
@@ -188,6 +210,8 @@ export interface SaleOrder {
 
 export type InventoryCategory = 'for_sale' | 'internal_use';
 
+export type ProductAvailabilityStatus = 'available' | 'unavailable' | 'not_for_sale';
+
 export interface InventoryVariantStock {
   id: string;
   variantName: string; // e.g., "Size S", "Size M", "Size L", "Size XL", "Size XXL", "All Size"
@@ -214,6 +238,7 @@ export interface InventoryItem {
   usedOrSoldQty: number; // Jumlah yang sudah terjual (untuk for_sale) atau sudah terpakai/habis (untuk internal_use)
   remainingQty: number; // Jumlah yang belum terjual / masih tersedia = totalQty - usedOrSoldQty
   isAvailable?: boolean; // Status ketersediaan produk (Tersedia / Tidak Tersedia) yang bisa di-edit
+  availabilityStatus?: ProductAvailabilityStatus; // 'available' (Tersedia) | 'unavailable' (Tidak Tersedia / Habis) | 'not_for_sale' (Produk Tidak Dijual -> otomatis masuk Stock Tidak Terhitung)
   unitCost: number; // HPP per pcs (untuk for_sale) atau Harga Beli/Perolehan per unit (untuk internal_use)
   sellingPrice?: number; // Harga jual etalase per pcs (khusus for_sale, 0 untuk internal_use)
   totalRemainingValue: number; // Nilai total belum terjual / sisa pakai = remainingQty * unitCost
