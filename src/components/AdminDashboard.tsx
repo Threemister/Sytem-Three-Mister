@@ -86,12 +86,17 @@ interface AdminDashboardProps {
   token: string | null; // Google OAuth token
   isSyncing: boolean;
   syncError: string | null;
+  syncSuccess?: string | null;
   onGoogleSignIn: () => void;
   onGoogleSignOut: () => void;
   onPushToSheets: () => void;
   onPullFromSheets: () => void;
   onInitializeSheets?: () => void;
   onCreateNewSheet?: () => void;
+  onGenerateCloudSyncKey?: () => string | null;
+  onApplyCloudSyncKey?: (key: string) => Promise<boolean>;
+  onExportBackupData?: () => void;
+  onImportBackupData?: (file: File) => void;
   onDeleteTransaction?: (id: string) => void;
   onNavigateToTransactions?: () => void;
   onNavigateToScreen?: (screen: string) => void;
@@ -109,12 +114,17 @@ export default function AdminDashboard({
   token,
   isSyncing,
   syncError,
+  syncSuccess,
   onGoogleSignIn,
   onGoogleSignOut,
   onPushToSheets,
   onPullFromSheets,
   onInitializeSheets,
   onCreateNewSheet,
+  onGenerateCloudSyncKey,
+  onApplyCloudSyncKey,
+  onExportBackupData,
+  onImportBackupData,
   onDeleteTransaction,
   onNavigateToTransactions,
   onNavigateToScreen
@@ -122,6 +132,9 @@ export default function AdminDashboard({
   const [showConfig, setShowConfig] = useState(false);
   const [tempId, setTempId] = useState(spreadsheetId);
   const [domainCopied, setDomainCopied] = useState(false);
+  const [showCloudKeyModal, setShowCloudKeyModal] = useState(false);
+  const [cloudKeyInput, setCloudKeyInput] = useState('');
+  const [cloudKeyCopied, setCloudKeyCopied] = useState(false);
   const [isDeleteConfirmOpen, setIsDeleteConfirmOpen] = useState(false);
   const [deleteTarget, setDeleteTarget] = useState<{ id: string; description: string; amount: number } | null>(null);
 
@@ -1562,13 +1575,21 @@ export default function AdminDashboard({
             </div>
 
             {/* Otorisasi Google Button / Badge */}
-            <div className="flex items-center gap-2">
-              {user ? (
-                <div className="flex items-center gap-2">
+            <div className="flex flex-wrap items-center gap-2">
+              {user && token && token !== 'offline-demo-token' ? (
+                <div className="flex flex-wrap items-center gap-2">
                   <span className="inline-flex items-center gap-1.5 bg-emerald-50 text-emerald-800 text-xs font-semibold px-3 py-1.5 rounded-xl border border-emerald-200">
                     <UserCheck className="w-4 h-4 text-emerald-600" />
                     <span className="truncate max-w-[150px] sm:max-w-[220px]">{user.email}</span>
                   </span>
+                  <button
+                    onClick={() => setShowCloudKeyModal(!showCloudKeyModal)}
+                    className="inline-flex items-center gap-1.5 bg-amber-50 hover:bg-amber-100 text-amber-900 border border-amber-200 text-xs font-semibold px-3 py-1.5 rounded-xl transition cursor-pointer"
+                    title="Salin Kunci Sinkronisasi Cloud untuk dipakai di Website GitHub"
+                  >
+                    <Globe className="w-3.5 h-3.5 text-amber-700" />
+                    <span>Kunci Sinkron Web GitHub</span>
+                  </button>
                   <button
                     onClick={onGoogleSignOut}
                     className="text-xs text-rose-600 hover:text-rose-800 font-semibold px-2.5 py-1.5 hover:bg-rose-50 rounded-xl transition cursor-pointer"
@@ -1578,16 +1599,133 @@ export default function AdminDashboard({
                   </button>
                 </div>
               ) : (
-                <button
-                  onClick={onGoogleSignIn}
-                  className="inline-flex items-center gap-2 bg-[#580001] hover:bg-[#730002] text-white text-xs font-semibold px-4 py-2 rounded-xl shadow-xs transition cursor-pointer"
-                >
-                  <UserCheck className="w-4 h-4" />
-                  <span>Otorisasi Akun Google</span>
-                </button>
+                <div className="flex flex-wrap items-center gap-2">
+                  <span className="inline-flex items-center gap-1.5 bg-amber-50 text-amber-800 text-[11px] font-semibold px-2.5 py-1.5 rounded-xl border border-amber-200">
+                    <Globe className="w-3.5 h-3.5 text-amber-600" />
+                    <span>Mode Web GitHub / Lokal</span>
+                  </span>
+                  <button
+                    onClick={onGoogleSignIn}
+                    className="inline-flex items-center gap-1.5 bg-[#580001] hover:bg-[#730002] text-white text-xs font-semibold px-3.5 py-2 rounded-xl shadow-xs transition cursor-pointer"
+                  >
+                    <UserCheck className="w-4 h-4" />
+                    <span>Otorisasi Akun Google</span>
+                  </button>
+                  <button
+                    onClick={() => setShowCloudKeyModal(!showCloudKeyModal)}
+                    className="inline-flex items-center gap-1.5 bg-white hover:bg-slate-50 text-slate-800 border border-slate-300 text-xs font-semibold px-3 py-2 rounded-xl shadow-xs transition cursor-pointer"
+                  >
+                    <Link2 className="w-3.5 h-3.5 text-[#580001]" />
+                    <span>Pakai Kunci Cloud</span>
+                  </button>
+                </div>
               )}
             </div>
           </div>
+
+          {/* Modal / Panel Kunci Sinkronisasi Lintas Website (AI Studio <-> GitHub Pages) */}
+          {showCloudKeyModal && (
+            <div className="bg-amber-50/90 border border-amber-200 rounded-xl p-4 space-y-3 text-xs">
+              <div className="flex items-start justify-between gap-2">
+                <div>
+                  <h4 className="font-bold text-amber-950 text-sm flex items-center gap-1.5">
+                    <Globe className="w-4 h-4 text-[#580001]" />
+                    <span>Sinkronisasi Langsung ke Website GitHub (Cross-Domain Cloud Key)</span>
+                  </h4>
+                  <p className="text-amber-900/80 text-[11px] mt-0.5 leading-relaxed">
+                    Jika website hasil deploy GitHub terkendala pop-up login Google, Anda cukup <strong>Salin Kunci Cloud</strong> dari halaman yang sudah login Google, lalu <strong>Tempel Kunci Cloud</strong> di website GitHub agar tombol Simpan & Unduh Data langsung aktif penuh ke Google Spreadsheet yang sama.
+                  </p>
+                </div>
+                <button
+                  onClick={() => setShowCloudKeyModal(false)}
+                  className="text-amber-800 hover:text-amber-950 p-1 rounded-lg hover:bg-amber-100 cursor-pointer"
+                >
+                  <X className="w-4 h-4" />
+                </button>
+              </div>
+
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-3 pt-1">
+                {/* Langkah 1: Salin Kunci Cloud */}
+                <div className="bg-white rounded-xl p-3 border border-amber-200/90 space-y-2">
+                  <div className="font-bold text-slate-800 flex items-center justify-between">
+                    <span>1. Ambil Kunci dari Sesi yang Sudah Login</span>
+                    {token && token !== 'offline-demo-token' ? (
+                      <span className="text-[10px] bg-emerald-50 text-emerald-700 border border-emerald-200 px-2 py-0.5 rounded-full font-semibold">
+                        Token Aktif
+                      </span>
+                    ) : (
+                      <span className="text-[10px] bg-slate-100 text-slate-500 px-2 py-0.5 rounded-full font-semibold">
+                        Belum Login
+                      </span>
+                    )}
+                  </div>
+                  <p className="text-[11px] text-slate-500">
+                    Salin kunci sesi Google Sheets beserta ID Spreadsheet aktif untuk ditempel di website GitHub Anda.
+                  </p>
+                  <button
+                    type="button"
+                    disabled={!onGenerateCloudSyncKey || !token || token === 'offline-demo-token'}
+                    onClick={() => {
+                      if (!onGenerateCloudSyncKey) return;
+                      const key = onGenerateCloudSyncKey();
+                      if (key && navigator.clipboard) {
+                        navigator.clipboard.writeText(key);
+                        setCloudKeyCopied(true);
+                        setTimeout(() => setCloudKeyCopied(false), 3500);
+                      }
+                    }}
+                    className="w-full inline-flex items-center justify-center gap-1.5 px-3 py-2 bg-[#580001] hover:bg-[#730002] disabled:bg-slate-200 disabled:text-slate-400 text-white font-semibold rounded-lg transition cursor-pointer"
+                  >
+                    {cloudKeyCopied ? (
+                      <>
+                        <Check className="w-4 h-4 text-emerald-300" />
+                        <span>Kunci Cloud Berhasil Disalin!</span>
+                      </>
+                    ) : (
+                      <>
+                        <Copy className="w-3.5 h-3.5" />
+                        <span>Salin Kunci Sinkronisasi Cloud</span>
+                      </>
+                    )}
+                  </button>
+                </div>
+
+                {/* Langkah 2: Tempel Kunci Cloud di Website GitHub */}
+                <div className="bg-white rounded-xl p-3 border border-amber-200/90 space-y-2">
+                  <div className="font-bold text-slate-800">
+                    2. Tempel Kunci Cloud di Website GitHub
+                  </div>
+                  <div className="flex gap-2">
+                    <input
+                      type="text"
+                      value={cloudKeyInput}
+                      onChange={(e) => setCloudKeyInput(e.target.value)}
+                      placeholder="Tempel Kunci Cloud di sini..."
+                      className="flex-1 px-3 py-1.5 bg-slate-50 border border-slate-300 rounded-lg text-xs font-mono focus:outline-none focus:border-[#580001]"
+                    />
+                    <button
+                      type="button"
+                      disabled={!cloudKeyInput.trim() || !onApplyCloudSyncKey || isSyncing}
+                      onClick={async () => {
+                        if (!onApplyCloudSyncKey) return;
+                        const ok = await onApplyCloudSyncKey(cloudKeyInput);
+                        if (ok) {
+                          setCloudKeyInput('');
+                          setShowCloudKeyModal(false);
+                        }
+                      }}
+                      className="px-3.5 py-1.5 bg-emerald-600 hover:bg-emerald-700 disabled:bg-slate-200 disabled:text-slate-400 text-white font-semibold rounded-lg transition shrink-0 cursor-pointer"
+                    >
+                      Hubungkan & Sinkron
+                    </button>
+                  </div>
+                  <p className="text-[10px] text-slate-500">
+                    Otomatis mengaktifkan <strong>Simpan Data</strong> & <strong>Unduh Data</strong> di website GitHub ke Google Spreadsheet Anda.
+                  </p>
+                </div>
+              </div>
+            </div>
+          )}
 
           {/* Spreadsheet Target Bar */}
           <div className="bg-slate-50 border border-slate-200/80 rounded-xl p-3.5 flex flex-col md:flex-row md:items-center justify-between gap-3 text-xs">
@@ -1720,7 +1858,7 @@ export default function AdminDashboard({
             {/* Tombol Simpan Data (Save Data / Push) */}
             <button
               onClick={onPushToSheets}
-              disabled={!token || isSyncing}
+              disabled={isSyncing}
               className="group flex items-center justify-between p-4 rounded-xl bg-[#580001] hover:bg-[#730002] active:bg-[#400001] text-white shadow-xs transition disabled:bg-slate-100 disabled:text-slate-400 disabled:border disabled:border-slate-200 disabled:cursor-not-allowed cursor-pointer"
             >
               <div className="flex items-center gap-3">
@@ -1728,7 +1866,12 @@ export default function AdminDashboard({
                   <Upload className="w-5 h-5 text-white group-disabled:text-slate-400" />
                 </div>
                 <div className="text-left">
-                  <h4 className="font-bold text-sm tracking-tight">Simpan Data ke Sheets (Save Data)</h4>
+                  <div className="flex items-center gap-2 flex-wrap">
+                    <h4 className="font-bold text-sm tracking-tight">Simpan Data ke Sheets (Save Data)</h4>
+                    <span className="text-[10px] font-semibold bg-white/15 px-2 py-0.5 rounded-full">
+                      {token && token !== 'offline-demo-token' ? 'Cloud + Lokal' : 'Simpan Lokal / Otorisasi'}
+                    </span>
+                  </div>
                   <p className="text-[11px] text-white/80 group-disabled:text-slate-400 mt-0.5">
                     Kirim seluruh data Akun, Stock SKU, Inventory, Penjualan, Transaksi, HPP, & Ringkasan ke awan
                   </p>
@@ -1740,7 +1883,7 @@ export default function AdminDashboard({
             {/* Tombol Unduh Data (Download Data / Pull) */}
             <button
               onClick={onPullFromSheets}
-              disabled={!token || isSyncing}
+              disabled={isSyncing}
               className="group flex items-center justify-between p-4 rounded-xl bg-white hover:bg-slate-50 active:bg-slate-100 text-slate-800 border border-slate-200 hover:border-slate-300 shadow-xs transition disabled:bg-slate-100 disabled:text-slate-400 disabled:border-slate-200 disabled:cursor-not-allowed cursor-pointer"
             >
               <div className="flex items-center gap-3">
@@ -1748,15 +1891,65 @@ export default function AdminDashboard({
                   <Download className="w-5 h-5 group-disabled:text-slate-400" />
                 </div>
                 <div className="text-left">
-                  <h4 className="font-bold text-sm tracking-tight">Unduh Data dari Sheets (Download Data)</h4>
+                  <div className="flex items-center gap-2 flex-wrap">
+                    <h4 className="font-bold text-sm tracking-tight">Unduh Data dari Sheets (Download Data)</h4>
+                    <span className="text-[10px] font-semibold bg-emerald-50 text-emerald-700 border border-emerald-200 px-2 py-0.5 rounded-full">
+                      {token && token !== 'offline-demo-token' ? 'API Cloud' : 'Mode Web GitHub Aktif'}
+                    </span>
+                  </div>
                   <p className="text-[11px] text-slate-500 group-disabled:text-slate-400 mt-0.5">
-                    Tarik pembaruan seluruh sheet fitur dari Google Sheets ke sistem lokal
+                    Tarik pembaruan seluruh 8 sheet fitur dari Google Sheets ke sistem (bisa dipakai di Web GitHub)
                   </p>
                 </div>
               </div>
               <ChevronRight className="w-5 h-5 text-slate-400 shrink-0" />
             </button>
           </div>
+
+          {/* Bar Cadangan File Backup JSON (Sinkronisasi Instan Lintas Perangkat / GitHub Web) */}
+          {(onExportBackupData || onImportBackupData) && (
+            <div className="bg-slate-50 border border-slate-200/80 rounded-xl p-3 flex flex-col sm:flex-row sm:items-center justify-between gap-3 text-xs">
+              <div className="flex items-center gap-2.5">
+                <Database className="w-4 h-4 text-[#580001] shrink-0" />
+                <div>
+                  <span className="font-bold text-slate-800">Sinkronisasi File Backup Lengkap (.JSON):</span>{' '}
+                  <span className="text-slate-500 text-[11px]">
+                    Alternatif praktis untuk memindahkan seluruh data ke/dari website GitHub dalam 1 klik tanpa terkendala login domain.
+                  </span>
+                </div>
+              </div>
+              <div className="flex flex-wrap items-center gap-2 shrink-0">
+                {onExportBackupData && (
+                  <button
+                    type="button"
+                    onClick={onExportBackupData}
+                    className="inline-flex items-center gap-1.5 px-3 py-1.5 bg-white hover:bg-slate-100 border border-slate-300 text-slate-800 font-semibold rounded-lg transition cursor-pointer"
+                  >
+                    <Download className="w-3.5 h-3.5 text-[#580001]" />
+                    <span>Unduh File Data (.json)</span>
+                  </button>
+                )}
+                {onImportBackupData && (
+                  <label className="inline-flex items-center gap-1.5 px-3 py-1.5 bg-emerald-50 hover:bg-emerald-100 border border-emerald-200 text-emerald-900 font-semibold rounded-lg transition cursor-pointer">
+                    <Upload className="w-3.5 h-3.5 text-emerald-700" />
+                    <span>Muat File Data (.json)</span>
+                    <input
+                      type="file"
+                      accept=".json,application/json"
+                      className="hidden"
+                      onChange={(e) => {
+                        const file = e.target.files?.[0];
+                        if (file) {
+                          onImportBackupData(file);
+                          e.target.value = '';
+                        }
+                      }}
+                    />
+                  </label>
+                )}
+              </div>
+            </div>
+          )}
 
           {/* Auto-Sync Footnote */}
           <div className="flex items-center gap-2 text-[11px] text-slate-600 bg-slate-50/80 px-3.5 py-2.5 rounded-lg border border-slate-200/60">
@@ -1771,6 +1964,13 @@ export default function AdminDashboard({
             <div className="flex items-center justify-center gap-2 bg-amber-50 border border-amber-200 text-amber-900 p-3.5 rounded-xl text-xs">
               <ClockIcon className="w-4 h-4 animate-spin text-amber-600" />
               <span>Sedang memproses sinkronisasi data dengan Google Sheets Cloud... Harap tunggu sebentar.</span>
+            </div>
+          )}
+
+          {syncSuccess && !isSyncing && (
+            <div className="flex items-center gap-2.5 bg-emerald-50 border border-emerald-200 text-emerald-900 p-3.5 rounded-xl text-xs font-medium">
+              <CheckCircle className="w-4 h-4 text-emerald-600 shrink-0" />
+              <span>{syncSuccess}</span>
             </div>
           )}
 

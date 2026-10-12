@@ -6,7 +6,7 @@
 import { useState, useEffect, useRef } from 'react';
 import { Account, Transaction, FinanceNotification, SavedCalculation, FinancialSummaryData, SaleOrder, InventoryItem, MarketplacePricingHistory } from './types';
 import { defaultAccounts, defaultTransactions, defaultSales, defaultInventory } from './defaultData';
-import { initAuth, googleSignIn, logout, getAccessToken, clearExpiredToken } from './firebase';
+import { initAuth, googleSignIn, logout, getAccessToken, clearExpiredToken, saveManualCloudToken } from './firebase';
 import { 
   createNewSpreadsheet,
   ensureSheetsExist, 
@@ -114,6 +114,7 @@ export default function App() {
   const [isAuthChecking, setIsAuthChecking] = useState(true);
   const [isSyncing, setIsSyncing] = useState(false);
   const [syncError, setSyncError] = useState<string | null>(null);
+  const [syncSuccess, setSyncSuccess] = useState<string | null>(null);
   const [popupBlocked, setPopupBlocked] = useState(false);
   const [unauthorizedDomain, setUnauthorizedDomain] = useState<string | null>(null);
   const [domainCopied, setDomainCopied] = useState(false);
@@ -637,12 +638,19 @@ export default function App() {
   const autoSyncTimeoutRef = useRef<NodeJS.Timeout | null>(null);
   const hasInitialSheetSyncRef = useRef<string | null>(null);
 
+  const markLocalEdits = () => {
+    try {
+      localStorage.setItem('finance_has_local_edits', 'true');
+    } catch {}
+  };
+
   const triggerAutoSync = (
     updatedAccs?: Account[],
     updatedTxs?: Transaction[],
     updatedSales?: SaleOrder[],
     updatedInv?: InventoryItem[]
   ) => {
+    markLocalEdits();
     if (!oauthToken || oauthToken === 'offline-demo-token' || !spreadsheetId) return;
 
     if (autoSyncTimeoutRef.current) {
@@ -674,6 +682,7 @@ export default function App() {
           oauthToken
         );
         setSyncError(null);
+        setSyncSuccess(`Auto-sync berhasil disimpan ke Google Sheets (${summary.lastUpdated}).`);
         if (addedSheets && addedSheets.length > 0) {
           addNotification(
             '✨ Sheet Fitur Baru Otomatis Ditambahkan',
@@ -694,19 +703,107 @@ export default function App() {
     }, 1200);
   };
 
-  // Automatically ensure all feature sheets exist & sync when connected to Google Sheets
+  // Safe Initial Cloud Sync on startup / login:
+  // - Never blindly overwrites Google Sheets with defaultData when opening the GitHub Pages website!
+  // - If this browser has no local edits yet (e.g. newly opened GitHub website), automatically pulls from Google Sheets.
+  // - If connected with OAuth token, ensures all 8 feature sheets exist first.
   useEffect(() => {
-    if (
-      oauthToken &&
-      oauthToken !== 'offline-demo-token' &&
-      spreadsheetId &&
-      accounts.length > 0 &&
-      hasInitialSheetSyncRef.current !== `${spreadsheetId}-${oauthToken}`
-    ) {
-      hasInitialSheetSyncRef.current = `${spreadsheetId}-${oauthToken}`;
-      triggerAutoSync(accounts, transactions, sales, inventory);
-    }
-  }, [oauthToken, spreadsheetId, accounts.length]);
+    if (!spreadsheetId || !user || !oauthToken) return;
+    const syncKey = `${spreadsheetId}-${oauthToken}`;
+    if (hasInitialSheetSyncRef.current === syncKey) return;
+    hasInitialSheetSyncRef.current = syncKey;
+
+    const performInitialSmartSync = async () => {
+      const hasLocalEdits = localStorage.getItem('finance_has_local_edits') === 'true';
+      const isRealToken = oauthToken !== 'offline-demo-token';
+
+      try {
+        if (isRealToken) {
+          await ensureSheetsExist(spreadsheetId, oauthToken).catch(() => []);
+        }
+
+        // If this browser/website (e.g. GitHub Pages) hasn't been edited locally yet, pull latest data from Google Sheets
+        if (!hasLocalEdits) {
+          const [
+            pulledAccounts,
+            pulledTransactions,
+            pulledHPP,
+            pulledInventory,
+            pulledSales,
+            pulledMarketplace
+          ] = await Promise.all([
+            pullAccountsFromSheets(spreadsheetId, oauthToken).catch(() => []),
+            pullTransactionsFromSheets(spreadsheetId, oauthToken).catch(() => []),
+            pullHPPFromSheets(spreadsheetId, oauthToken).catch(() => []),
+            pullInventoryFromSheets(spreadsheetId, oauthToken).catch(() => []),
+            pullSalesFromSheets(spreadsheetId, oauthToken).catch(() => []),
+            pullMarketplaceHistoryFromSheets(spreadsheetId, oauthToken).catch(() => [])
+          ]);
+
+          const hasCloudData =
+            pulledAccounts.length > 0 ||
+            pulledInventory.length > 0 ||
+            pulledSales.length > 0 ||
+            pulledTransactions.length > 0;
+
+          if (hasCloudData) {
+            const finalInventory = pulledInventory.length > 0 ? pulledInventory : inventory;
+            if (pulledInventory.length > 0) {
+              setInventory(pulledInventory);
+              localStorage.setItem('finance_inventory', JSON.stringify(pulledInventory));
+            }
+            if (pulledAccounts.length > 0) {
+              const syncedPulledAccounts = syncInventoryToAccounts(pulledAccounts, finalInventory);
+              setAccounts(syncedPulledAccounts);
+              localStorage.setItem('finance_accounts', JSON.stringify(syncedPulledAccounts));
+            }
+            if (pulledSales.length > 0) {
+              setSales(pulledSales);
+              localStorage.setItem('finance_sales', JSON.stringify(pulledSales));
+            }
+            if (pulledTransactions.length > 0) {
+              setTransactions(pulledTransactions);
+              localStorage.setItem('finance_transactions', JSON.stringify(pulledTransactions));
+            }
+            if (pulledHPP.length > 0) {
+              localStorage.setItem('threemister_hpp_calcs', JSON.stringify(pulledHPP));
+              window.dispatchEvent(new CustomEvent('hpp_updated'));
+            }
+            if (pulledMarketplace.length > 0) {
+              localStorage.setItem('threemister_marketplace_history', JSON.stringify(pulledMarketplace));
+              window.dispatchEvent(new CustomEvent('marketplace_updated'));
+            }
+            setSyncSuccess('Data terbaru dari Google Spreadsheet berhasil dimuat otomatis.');
+            return;
+          }
+        }
+
+        // Only push if we have a real OAuth token and either local edits exist or the sheet was empty
+        if (isRealToken && accounts.length > 0) {
+          const hppToSync = getLocalHPP();
+          const mpHistoryToSync = getLocalMarketplaceHistory();
+          const summary = computeFinancialSummary(accounts, transactions, inventory, sales);
+          await pushAllDataToSheets(
+            spreadsheetId,
+            {
+              accounts,
+              transactions,
+              sales,
+              inventory,
+              hppCalcs: hppToSync,
+              marketplaceHistory: mpHistoryToSync,
+              summary
+            },
+            oauthToken
+          );
+        }
+      } catch (err) {
+        console.warn('Initial smart sync note:', err);
+      }
+    };
+
+    performInitialSmartSync();
+  }, [oauthToken, spreadsheetId, user]);
 
   // Listen to HPP & Marketplace Pricing updates across the app
   useEffect(() => {
@@ -1159,8 +1256,225 @@ export default function App() {
 
   // Change Spreadsheet ID
   const handleSpreadsheetIdChange = (id: string) => {
-    setSpreadsheetId(id);
-    localStorage.setItem('finance_spreadsheet_id', id);
+    // Extract ID automatically if user pasted a full Google Sheets URL
+    let cleanId = id.trim();
+    const match = cleanId.match(/\/spreadsheets\/d\/([a-zA-Z0-9-_]+)/);
+    if (match && match[1]) {
+      cleanId = match[1];
+    }
+    setSpreadsheetId(cleanId);
+    localStorage.setItem('finance_spreadsheet_id', cleanId);
+    setSyncSuccess(`ID Spreadsheet diperbarui ke: ${cleanId}`);
+  };
+
+  // ================= CROSS-DOMAIN CLOUD SYNC KEY & FILE BACKUP (GITHUB PAGES SUPPORT) =================
+  const handleGenerateCloudSyncKey = (): string => {
+    const payload = {
+      v: 1,
+      s: spreadsheetId,
+      t: oauthToken && oauthToken !== 'offline-demo-token' ? oauthToken : '',
+      e: user?.email || 'ersgroup2002@gmail.com'
+    };
+    return 'TM-SYNC:' + btoa(encodeURIComponent(JSON.stringify(payload)));
+  };
+
+  const handleApplyCloudSyncKey = async (rawInput: string): Promise<boolean> => {
+    const trimmed = (rawInput || '').trim();
+    if (!trimmed) {
+      setSyncError('Masukkan Kunci Sinkronisasi Cloud atau Token Akses Google terlebih dahulu.');
+      return false;
+    }
+
+    let extractedToken = '';
+    let extractedSheetId = spreadsheetId;
+    let extractedEmail = 'ersgroup2002@gmail.com';
+
+    try {
+      if (trimmed.startsWith('TM-SYNC:')) {
+        const base64Part = trimmed.slice('TM-SYNC:'.length).trim();
+        const decoded = JSON.parse(decodeURIComponent(atob(base64Part)));
+        if (decoded.s) extractedSheetId = decoded.s;
+        if (decoded.t) extractedToken = decoded.t;
+        if (decoded.e) extractedEmail = decoded.e;
+      } else if (trimmed.startsWith('{')) {
+        const parsed = JSON.parse(trimmed);
+        if (parsed.spreadsheetId || parsed.s) extractedSheetId = parsed.spreadsheetId || parsed.s;
+        if (parsed.token || parsed.t || parsed.oauthToken) extractedToken = parsed.token || parsed.t || parsed.oauthToken;
+        if (parsed.email || parsed.e) extractedEmail = parsed.email || parsed.e;
+      } else {
+        // Assume direct Google OAuth2 access token (e.g. ya29....)
+        extractedToken = trimmed;
+      }
+    } catch {
+      setSyncError('Format Kunci Sinkronisasi Cloud tidak valid. Pastikan Anda menyalin seluruh kunci dengan benar.');
+      return false;
+    }
+
+    if (extractedSheetId) {
+      setSpreadsheetId(extractedSheetId);
+      localStorage.setItem('finance_spreadsheet_id', extractedSheetId);
+    }
+
+    if (extractedToken && extractedToken !== 'offline-demo-token') {
+      saveManualCloudToken(extractedToken, extractedEmail);
+      setUser({
+        email: extractedEmail,
+        displayName: 'THREE MISTER Cloud Sync',
+        uid: 'threemister-cloud-sync'
+      });
+      setOauthToken(extractedToken);
+      setUnauthorizedDomain(null);
+      setPopupBlocked(false);
+      setSyncError(null);
+      setSyncSuccess(`Kunci Cloud berhasil diaktifkan untuk ${extractedEmail}! Menyinkronkan data dari Google Sheets...`);
+      addNotification(
+        '🔑 Kunci Sinkronisasi Cloud Aktif',
+        `Website berhasil terhubung ke Google Sheets (${extractedEmail}). Sekarang Anda dapat Simpan Data & Unduh Data secara langsung.`,
+        'success'
+      );
+      return true;
+    } else {
+      setSyncError('Kunci yang dimasukkan belum memiliki Token Google aktif. Login Google di AI Studio lalu klik "Salin Kunci Cloud".');
+      return false;
+    }
+  };
+
+  const handleExportBackupData = () => {
+    const hppCalcs = getLocalHPP();
+    const marketplaceHistory = getLocalMarketplaceHistory();
+    const backupPayload = {
+      app: 'THREE_MISTER_ACCOUNTING',
+      version: '2.0',
+      exportedAt: new Date().toISOString(),
+      spreadsheetId,
+      cloudToken: oauthToken && oauthToken !== 'offline-demo-token' ? oauthToken : undefined,
+      cloudEmail: user?.email,
+      data: {
+        accounts,
+        inventory,
+        sales,
+        transactions,
+        hppCalcs,
+        marketplaceHistory
+      }
+    };
+
+    const blob = new Blob([JSON.stringify(backupPayload, null, 2)], { type: 'application/json' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    const dateStr = new Date().toISOString().split('T')[0];
+    a.href = url;
+    a.download = `THREE_MISTER_Data_Sinkronisasi_${dateStr}.json`;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    URL.revokeObjectURL(url);
+
+    setSyncError(null);
+    setSyncSuccess(
+      `File data berhasil diunduh (THREE_MISTER_Data_Sinkronisasi_${dateStr}.json). Muat file ini di website GitHub Anda untuk langsung sinkron 100%!`
+    );
+    addNotification(
+      '💾 File Data Berhasil Diunduh',
+      `Seluruh data (${accounts.length} Akun, ${inventory.length} Stock/Inventory, ${sales.length} Penjualan, ${transactions.length} Transaksi, & ${hppCalcs.length} HPP) berhasil disimpan ke file .JSON.`,
+      'success'
+    );
+  };
+
+  const handleImportBackupData = async (input: File | string) => {
+    try {
+      const jsonContent = typeof input === 'string' ? input : await input.text();
+      const parsed = JSON.parse(jsonContent);
+      const dataRoot = parsed.data || parsed;
+
+      const impInventory: InventoryItem[] = Array.isArray(dataRoot.inventory) ? dataRoot.inventory : inventory;
+      const impAccounts: Account[] = Array.isArray(dataRoot.accounts) ? dataRoot.accounts : accounts;
+      const impSales: SaleOrder[] = Array.isArray(dataRoot.sales) ? dataRoot.sales : sales;
+      const impTransactions: Transaction[] = Array.isArray(dataRoot.transactions) ? dataRoot.transactions : transactions;
+      const impHpp: SavedCalculation[] = Array.isArray(dataRoot.hppCalcs) ? dataRoot.hppCalcs : [];
+      const impMp: MarketplacePricingHistory[] = Array.isArray(dataRoot.marketplaceHistory) ? dataRoot.marketplaceHistory : [];
+
+      if (impAccounts.length === 0 && impInventory.length === 0 && impTransactions.length === 0) {
+        throw new Error('File JSON tidak berisi data pembukuan THREE MISTER yang valid.');
+      }
+
+      markLocalEdits();
+
+      if (impInventory.length > 0) {
+        setInventory(impInventory);
+        localStorage.setItem('finance_inventory', JSON.stringify(impInventory));
+      }
+
+      const syncedImpAccounts = syncInventoryToAccounts(impAccounts, impInventory);
+      setAccounts(syncedImpAccounts);
+      localStorage.setItem('finance_accounts', JSON.stringify(syncedImpAccounts));
+
+      setSales(impSales);
+      localStorage.setItem('finance_sales', JSON.stringify(impSales));
+
+      setTransactions(impTransactions);
+      localStorage.setItem('finance_transactions', JSON.stringify(impTransactions));
+
+      if (impHpp.length > 0) {
+        localStorage.setItem('threemister_hpp_calcs', JSON.stringify(impHpp));
+        window.dispatchEvent(new CustomEvent('hpp_updated'));
+      }
+
+      if (impMp.length > 0) {
+        localStorage.setItem('threemister_marketplace_history', JSON.stringify(impMp));
+        window.dispatchEvent(new CustomEvent('marketplace_updated'));
+      }
+
+      if (parsed.spreadsheetId) {
+        setSpreadsheetId(parsed.spreadsheetId);
+        localStorage.setItem('finance_spreadsheet_id', parsed.spreadsheetId);
+      }
+
+      let activeToken = oauthToken;
+      if (parsed.cloudToken && parsed.cloudToken !== 'offline-demo-token') {
+        const email = parsed.cloudEmail || 'ersgroup2002@gmail.com';
+        saveManualCloudToken(parsed.cloudToken, email);
+        setUser({
+          email,
+          displayName: 'THREE MISTER Cloud Sync',
+          uid: 'threemister-cloud-sync'
+        });
+        setOauthToken(parsed.cloudToken);
+        activeToken = parsed.cloudToken;
+      }
+
+      setSyncError(null);
+      setSyncSuccess(
+        `Berhasil memuat & menyinkronkan data: ${syncedImpAccounts.length} Akun, ${impInventory.length} Stock SKU & Inventory, ${impSales.length} Penjualan, ${impTransactions.length} Transaksi, dan ${impHpp.length} HPP!`
+      );
+      addNotification(
+        '✅ Data Berhasil Dimuat & Disinkronkan',
+        `Seluruh data dari file cadangan (${syncedImpAccounts.length} Akun, ${impInventory.length} Inventory/SKU, ${impSales.length} Penjualan, ${impTransactions.length} Transaksi) berhasil diterapkan ke website ini.`,
+        'success'
+      );
+
+      // Also push to Google Sheets if a valid token is available
+      if (activeToken && activeToken !== 'offline-demo-token' && (parsed.spreadsheetId || spreadsheetId)) {
+        const targetSheetId = parsed.spreadsheetId || spreadsheetId;
+        const summary = computeFinancialSummary(syncedImpAccounts, impTransactions, impInventory, impSales);
+        await pushAllDataToSheets(
+          targetSheetId,
+          {
+            accounts: syncedImpAccounts,
+            transactions: impTransactions,
+            sales: impSales,
+            inventory: impInventory,
+            hppCalcs: impHpp.length > 0 ? impHpp : getLocalHPP(),
+            marketplaceHistory: impMp.length > 0 ? impMp : getLocalMarketplaceHistory(),
+            summary
+          },
+          activeToken
+        ).catch(() => {});
+      }
+    } catch (err: any) {
+      setSyncError(`Gagal memuat file data: ${err.message || 'File tidak valid'}`);
+      addNotification('Gagal Muat File Data', err.message || 'File tidak valid', 'danger');
+    }
   };
 
   // ================= GOOGLE SHEETS SYNC CONTROLS =================
@@ -1190,6 +1504,7 @@ export default function App() {
   const handleGoogleSignIn = async () => {
     setIsSyncing(true);
     setSyncError(null);
+    setSyncSuccess(null);
     setPopupBlocked(false);
     setUnauthorizedDomain(null);
     try {
@@ -1199,9 +1514,11 @@ export default function App() {
         setOauthToken(res.accessToken);
         try {
           localStorage.removeItem('threemister_is_demo_mode');
+          localStorage.setItem('threemister_cloud_user_email', res.user.email || 'ersgroup2002@gmail.com');
         } catch {
           // Ignore storage errors
         }
+        setSyncSuccess(`Terhubung ke Google Sheets sebagai ${res.user.email}.`);
         addNotification(
           'Google Sheets Terhubung',
           `Sesi berhasil diotorisasi dengan aman untuk ${res.user.email}. Google Sheets API siap dijalankan.`,
@@ -1224,15 +1541,14 @@ export default function App() {
       
       if (isClosedByUser) {
         console.info('Sign-in cancelled or popup closed by user.');
-        // User voluntarily dismissed popup or cancelled; keep state clean without alarm
       } else if (isUnauthorized) {
         const detectedDomain = err?.domain || (typeof window !== 'undefined' ? window.location.hostname : '');
         setUnauthorizedDomain(detectedDomain || 'domain ini');
         setPopupBlocked(false);
-        setSyncError(`Domain "${detectedDomain}" belum diizinkan di Firebase Console (auth/unauthorized-domain).`);
+        setSyncError(`Domain "${detectedDomain}" belum terdaftar di Firebase Authorized Domains (auth/unauthorized-domain). Gunakan fitur "Tempel Kunci Cloud" atau tambahkan domain "${detectedDomain}" di Firebase Console.`);
         addNotification(
           'Domain Belum Diizinkan',
-          `Domain ${detectedDomain} belum terdaftar di Authorized Domains Firebase Authentication. Tambahkan domain ini di Firebase Console atau gunakan Mode Demo.`,
+          `Domain ${detectedDomain} belum terdaftar di Authorized Domains Firebase. Anda tetap bisa menyinkronkan data dengan "Tempel Kunci Cloud", "Unduh Data dari Sheets", atau "Muat File Data (.JSON)".`,
           'warning'
         );
       } else if (isBlocked) {
@@ -1256,6 +1572,7 @@ export default function App() {
       await logout();
       try {
         localStorage.removeItem('threemister_is_demo_mode');
+        localStorage.removeItem('threemister_cloud_user_email');
       } catch {
         // Ignore storage errors
       }
@@ -1263,6 +1580,7 @@ export default function App() {
       setOauthToken(null);
       setPopupBlocked(false);
       setSyncError(null);
+      setSyncSuccess(null);
       addNotification(
         'Google Sheets Diputuskan',
         'Akun Google dideotorisasi dengan sukses. Data lokal tetap tersimpan utuh.',
@@ -1277,11 +1595,12 @@ export default function App() {
 
   const handleCreateNewSheet = async () => {
     if (!oauthToken || oauthToken === 'offline-demo-token') {
-      setSyncError('Silakan otorisasi akun Google Anda terlebih dahulu.');
+      setSyncError('Untuk membuat Spreadsheet baru di Google Drive, silakan klik "Otorisasi Akun Google" atau tempel "Kunci Cloud" terlebih dahulu.');
       return;
     }
     setIsSyncing(true);
     setSyncError(null);
+    setSyncSuccess(null);
     try {
       const { spreadsheetId: newId } = await createNewSpreadsheet(
         'THREE MISTER - Pembukuan & Akuntansi',
@@ -1303,6 +1622,7 @@ export default function App() {
         summary,
       }, oauthToken);
 
+      setSyncSuccess(`Spreadsheet baru berhasil dibuat (${newId}) dan seluruh 8 sheet fitur telah terisi!`);
       addNotification(
         'Google Sheet Berhasil Dibuat!',
         'Spreadsheet baru dibuat di Google Drive Anda dengan seluruh sheet fitur (AKUN, STOCK_SKU, INVENTORY, PENJUALAN, TRANSAKSI, HPP_PRODUK, HARGA_MARKETPLACE, RINGKASAN_KEUANGAN) dan data langsung terisi.',
@@ -1311,8 +1631,8 @@ export default function App() {
     } catch (err: any) {
       if (err?.message?.includes('401') || err?.message?.includes('403') || err?.message?.includes('Izin Google Sheets')) {
         clearExpiredToken();
-        setOauthToken(null);
-        setSyncError('Sesi Google Sheets telah kedaluwarsa (401). Silakan klik tombol "Hubungkan Ulang Google" untuk memperbarui izin.');
+        setOauthToken('offline-demo-token');
+        setSyncError('Sesi Google Sheets telah kedaluwarsa (401). Silakan klik tombol "Otorisasi Akun Google" atau tempel "Kunci Cloud" terbaru.');
         addNotification('Sesi Google Kedaluwarsa', 'Token akses Google Anda telah kedaluwarsa. Silakan login ulang.', 'warning');
       } else {
         setSyncError(`Gagal membuat Google Sheet otomatis: ${err.message}`);
@@ -1324,9 +1644,13 @@ export default function App() {
   };
 
   const handleInitializeSheets = async () => {
-    if (!oauthToken || oauthToken === 'offline-demo-token') return;
+    if (!oauthToken || oauthToken === 'offline-demo-token') {
+      setSyncError('Silakan klik "Otorisasi Akun Google" atau tempel "Kunci Cloud" terlebih dahulu untuk memperbarui struktur sheet.');
+      return;
+    }
     setIsSyncing(true);
     setSyncError(null);
+    setSyncSuccess(null);
     try {
       const hppCalcs = getLocalHPP();
       const marketplaceHistory = getLocalMarketplaceHistory();
@@ -1341,6 +1665,11 @@ export default function App() {
         summary,
       }, oauthToken);
 
+      setSyncSuccess(
+        addedSheets.length > 0
+          ? `Sheet fitur baru (${addedSheets.join(', ')}) berhasil dibuat dan seluruh data telah disinkronkan!`
+          : 'Seluruh 8 lembar kerja fitur telah lengkap dan tersinkronisasi!'
+      );
       addNotification(
         'Inisialisasi & Sinkronisasi Sukses',
         addedSheets.length > 0
@@ -1351,8 +1680,8 @@ export default function App() {
     } catch (err: any) {
       if (err?.message?.includes('401') || err?.message?.includes('403') || err?.message?.includes('Izin Google Sheets')) {
         clearExpiredToken();
-        setOauthToken(null);
-        setSyncError('Sesi Google Sheets telah kedaluwarsa (401). Silakan login ulang dengan akun Google Anda.');
+        setOauthToken('offline-demo-token');
+        setSyncError('Sesi Google Sheets telah kedaluwarsa (401). Silakan hubungkan ulang akun Google Anda atau tempel Kunci Cloud.');
         addNotification('Sesi Google Kedaluwarsa', 'Token Google telah kedaluwarsa. Silakan hubungkan ulang akun Google.', 'warning');
       } else {
         setSyncError(`Inisialisasi lembar kerja gagal: ${err.message}`);
@@ -1363,16 +1692,19 @@ export default function App() {
   };
 
   const handlePushToSheets = async () => {
-    if (!oauthToken || oauthToken === 'offline-demo-token') {
-      setSyncError('Silakan otorisasi akun Google Anda terlebih dahulu.');
-      return;
-    }
     if (!spreadsheetId) {
       setSyncError('ID Spreadsheet belum diatur. Klik "Buat Sheet Otomatis" atau masukkan ID Spreadsheet.');
       return;
     }
+    if (!oauthToken || oauthToken === 'offline-demo-token') {
+      setSyncError(
+        'Mode Offline Aktif: Untuk menyimpan langsung ke Google Sheets dari website ini, klik "Otorisasi Akun Google", tempel "Kunci Sinkronisasi Cloud" dari AI Studio, atau gunakan "Simpan File Data (.JSON)" di bawah.'
+      );
+      return;
+    }
     setIsSyncing(true);
     setSyncError(null);
+    setSyncSuccess(null);
     try {
       const hppCalcs = getLocalHPP();
       const marketplaceHistory = getLocalMarketplaceHistory();
@@ -1387,6 +1719,10 @@ export default function App() {
         summary,
       }, oauthToken);
 
+      markLocalEdits();
+      setSyncSuccess(
+        `Berhasil menyimpan seluruh data ke Google Sheets (${accounts.length} Akun, ${inventory.length} Stock SKU & Inventory, ${sales.length} Penjualan, ${transactions.length} Transaksi, & ${hppCalcs.length} HPP)${addedSheets.length > 0 ? ` + Sheet baru: ${addedSheets.join(', ')}` : ''}!`
+      );
       addNotification(
         'Data Tersimpan ke Sheets',
         `Berhasil menyimpan ${accounts.length} Akun, ${inventory.length} Stock SKU & Inventory, ${sales.length} Penjualan, ${transactions.length} Transaksi, ${hppCalcs.length} HPP Produk, dan Ringkasan Keuangan ke Google Sheets${addedSheets.length > 0 ? ` (Sheet baru otomatis ditambahkan: ${addedSheets.join(', ')})` : ''}.`,
@@ -1395,8 +1731,8 @@ export default function App() {
     } catch (err: any) {
       if (err?.message?.includes('401') || err?.message?.includes('403') || err?.message?.includes('Izin Google Sheets')) {
         clearExpiredToken();
-        setOauthToken(null);
-        setSyncError('Sesi Google Sheets telah kedaluwarsa (401). Silakan login ulang dengan akun Google Anda.');
+        setOauthToken('offline-demo-token');
+        setSyncError('Sesi Google Sheets telah kedaluwarsa (401). Silakan klik "Otorisasi Akun Google" atau tempel "Kunci Cloud" terbaru.');
         addNotification('Sesi Google Kedaluwarsa', 'Token Google telah habis masa berlakunya. Silakan hubungkan ulang akun Google.', 'warning');
       } else {
         setSyncError(`Gagal menyimpan data ke Google Sheets: ${err.message}`);
@@ -1407,25 +1743,26 @@ export default function App() {
     }
   };
 
-  const handlePullFromSheets = async (bypassConfirm = false) => {
-    if (!oauthToken || oauthToken === 'offline-demo-token') {
-      setSyncError('Silakan otorisasi akun Google terlebih dahulu.');
-      return;
-    }
+  const handlePullFromSheets = async (bypassConfirm?: boolean | any) => {
     if (!spreadsheetId) {
       setSyncError('ID Spreadsheet belum diatur.');
       return;
     }
-    
-    if (!bypassConfirm) {
+
+    const isConfirmed = bypassConfirm === true;
+    if (!isConfirmed) {
       setIsPullConfirmOpen(true);
       return;
     }
 
     setIsSyncing(true);
     setSyncError(null);
+    setSyncSuccess(null);
     try {
-      await ensureSheetsExist(spreadsheetId, oauthToken);
+      const hasRealToken = Boolean(oauthToken && oauthToken !== 'offline-demo-token');
+      if (hasRealToken && oauthToken) {
+        await ensureSheetsExist(spreadsheetId, oauthToken).catch(() => []);
+      }
 
       const [
         pulledAccounts,
@@ -1450,8 +1787,14 @@ export default function App() {
         pulledInventory.length === 0 &&
         pulledSales.length === 0
       ) {
-        throw new Error('Spreadsheet kosong atau lembar kerja belum memiliki baris data.');
+        throw new Error(
+          hasRealToken
+            ? 'Spreadsheet kosong atau lembar kerja belum memiliki baris data. Klik "Simpan Data ke Sheets" terlebih dahulu pada website sumber.'
+            : 'Tidak dapat membaca data dari Spreadsheet. Pastikan akses berbagi Google Sheet diatur ke "Siapa saja yang memiliki link" (Anyone with the link) atau hubungkan Kunci Cloud / Otorisasi Google.'
+        );
       }
+
+      markLocalEdits();
 
       const finalInventory = pulledInventory.length > 0 ? pulledInventory : inventory;
       if (pulledInventory.length > 0) {
@@ -1485,6 +1828,9 @@ export default function App() {
         window.dispatchEvent(new CustomEvent('marketplace_updated'));
       }
 
+      setSyncSuccess(
+        `Unduh Data Berhasil! Dimuat: ${pulledAccounts.length} Akun, ${pulledInventory.length} Stock SKU & Inventory, ${pulledSales.length} Penjualan, ${pulledTransactions.length} Transaksi, & ${pulledHPP.length} HPP.`
+      );
       addNotification(
         'Unduh Data Berhasil',
         `Berhasil mengunduh data awan: ${pulledAccounts.length} Akun, ${pulledInventory.length} Stock SKU & Inventory, ${pulledSales.length} Penjualan, ${pulledTransactions.length} Transaksi, dan ${pulledHPP.length} HPP Produk telah dimuat.`,
@@ -1493,8 +1839,8 @@ export default function App() {
     } catch (err: any) {
       if (err?.message?.includes('401') || err?.message?.includes('403') || err?.message?.includes('Izin Google Sheets')) {
         clearExpiredToken();
-        setOauthToken(null);
-        setSyncError('Sesi Google Sheets telah kedaluwarsa (401). Silakan login ulang dengan akun Google Anda.');
+        setOauthToken('offline-demo-token');
+        setSyncError('Sesi Google Sheets telah kedaluwarsa (401). Silakan klik "Otorisasi Akun Google", tempel "Kunci Cloud", atau pastikan akses Google Sheet diatur ke "Siapa saja yang memiliki link".');
         addNotification('Sesi Google Kedaluwarsa', 'Token akses Google Anda telah kedaluwarsa. Silakan hubungkan ulang akun Google.', 'warning');
       } else {
         setSyncError(`Gagal mengunduh data dari Google Sheets: ${err.message}`);
@@ -2422,12 +2768,17 @@ export default function App() {
               token={oauthToken}
               isSyncing={isSyncing}
               syncError={syncError}
+              syncSuccess={syncSuccess}
               onGoogleSignIn={handleGoogleSignIn}
               onGoogleSignOut={handleGoogleSignOut}
               onPushToSheets={handlePushToSheets}
-              onPullFromSheets={handlePullFromSheets}
+              onPullFromSheets={() => handlePullFromSheets(false)}
               onInitializeSheets={handleInitializeSheets}
               onCreateNewSheet={handleCreateNewSheet}
+              onGenerateCloudSyncKey={handleGenerateCloudSyncKey}
+              onApplyCloudSyncKey={handleApplyCloudSyncKey}
+              onExportBackupData={handleExportBackupData}
+              onImportBackupData={handleImportBackupData}
               onDeleteTransaction={handleDeleteTransaction}
               onNavigateToTransactions={() => setCurrentScreen('transaksi')}
               onNavigateToScreen={(screen) => setCurrentScreen(screen as Screen)}

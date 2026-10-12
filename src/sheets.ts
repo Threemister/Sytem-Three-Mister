@@ -244,6 +244,136 @@ function parseVariantsFromSheet(raw: string, parentSku: string): InventoryVarian
   });
 }
 
+// Helper to parse numbers reliably whether unformatted or formatted (e.g. "Rp 15.000.000", "15.000.000", "15,000,000", or raw number)
+export function parseNumberCell(val: any): number {
+  if (typeof val === 'number') return Number.isFinite(val) ? val : 0;
+  if (val === null || val === undefined) return 0;
+  const str = String(val).trim();
+  if (!str || str === '-') return 0;
+
+  const isNegative = str.startsWith('-') || (str.startsWith('(') && str.endsWith(')'));
+  const cleaned = str.replace(/[^0-9.,]/g, '');
+  if (!cleaned) return 0;
+
+  let normalized = cleaned;
+  const dots = (cleaned.match(/\./g) || []).length;
+  const commas = (cleaned.match(/,/g) || []).length;
+
+  if (dots > 1 && commas === 0) {
+    normalized = cleaned.replace(/\./g, '');
+  } else if (commas > 1 && dots === 0) {
+    normalized = cleaned.replace(/,/g, '');
+  } else if (dots === 1 && commas === 0) {
+    const parts = cleaned.split('.');
+    if (parts[1] && parts[1].length === 3) {
+      normalized = cleaned.replace(/\./g, '');
+    }
+  } else if (commas === 1 && dots === 0) {
+    const parts = cleaned.split(',');
+    if (parts[1] && parts[1].length === 3) {
+      normalized = cleaned.replace(/,/g, '');
+    } else {
+      normalized = cleaned.replace(',', '.');
+    }
+  } else if (dots >= 1 && commas >= 1) {
+    if (cleaned.lastIndexOf(',') > cleaned.lastIndexOf('.')) {
+      normalized = cleaned.replace(/\./g, '').replace(',', '.');
+    } else {
+      normalized = cleaned.replace(/,/g, '');
+    }
+  }
+
+  const num = parseFloat(normalized);
+  if (!Number.isFinite(num)) return 0;
+  return isNegative ? -num : num;
+}
+
+// RFC 4180 CSV Parser for Public Google Sheets fallback (works on GitHub Pages without OAuth token)
+function parseCSVRows(csvText: string): string[][] {
+  const rows: string[][] = [];
+  let currentRow: string[] = [];
+  let currentCell = '';
+  let inQuotes = false;
+
+  for (let i = 0; i < csvText.length; i++) {
+    const ch = csvText[i];
+    const next = csvText[i + 1];
+
+    if (inQuotes) {
+      if (ch === '"' && next === '"') {
+        currentCell += '"';
+        i++;
+      } else if (ch === '"') {
+        inQuotes = false;
+      } else {
+        currentCell += ch;
+      }
+    } else {
+      if (ch === '"') {
+        inQuotes = true;
+      } else if (ch === ',') {
+        currentRow.push(currentCell);
+        currentCell = '';
+      } else if (ch === '\r' && next === '\n') {
+        currentRow.push(currentCell);
+        rows.push(currentRow);
+        currentRow = [];
+        currentCell = '';
+        i++;
+      } else if (ch === '\n' || ch === '\r') {
+        currentRow.push(currentCell);
+        rows.push(currentRow);
+        currentRow = [];
+        currentCell = '';
+      } else {
+        currentCell += ch;
+      }
+    }
+  }
+
+  if (currentCell.length > 0 || currentRow.length > 0) {
+    currentRow.push(currentCell);
+    rows.push(currentRow);
+  }
+
+  return rows;
+}
+
+/**
+ * Fallback pembacaan sheet publik via endpoint CSV Google Visualization (tanpa memerlukan OAuth token).
+ * Memungkinkan website yang di-deploy ke GitHub Pages tetap bisa mengunduh data dari Google Spreadsheet
+ * selama link Spreadsheet diatur "Anyone with the link can view" (Siapa saja yang memiliki link).
+ */
+async function pullSheetViaPublicCSV(spreadsheetId: string, sheetTitle: string): Promise<string[][]> {
+  const url = `https://docs.google.com/spreadsheets/d/${spreadsheetId}/gviz/tq?tqx=out:csv&sheet=${encodeURIComponent(sheetTitle)}&_t=${Date.now()}`;
+  const response = await fetch(url, { method: 'GET' });
+  if (!response.ok) {
+    throw new Error(`Sheet publik tidak dapat diakses (${response.status}).`);
+  }
+  const text = await response.text();
+  // If Google returns HTML sign-in page, the sheet is private
+  if (text.trim().startsWith('<!DOCTYPE') || text.trim().startsWith('<html')) {
+    throw new Error('Spreadsheet bersifat privat. Ubah akses berbagi Google Sheet ke "Siapa saja yang memiliki link" atau hubungkan Token Google.');
+  }
+
+  const allRows = parseCSVRows(text);
+  if (allRows.length <= 1) return [];
+
+  const headerRow = allRows[0].map(h => (h || '').trim().toLowerCase());
+  // Prevent Google's gviz fallback behavior where a non-existent sheet name returns the first sheet (AKUN)
+  if (sheetTitle !== 'AKUN' && headerRow[0] === 'kode akun') {
+    return [];
+  }
+  if (sheetTitle === 'STOCK_SKU' && headerRow[1] && !headerRow[1].includes('induk')) {
+    return [];
+  }
+  if (sheetTitle === 'INVENTORY' && headerRow[1] && headerRow[1].includes('induk')) {
+    return [];
+  }
+
+  return allRows.slice(1);
+}
+
 // Helper to make Google API requests
 async function makeRequest(
   endpoint: string,
@@ -287,6 +417,43 @@ async function makeRequest(
   }
 
   return response.json();
+}
+
+/**
+ * Helper pintar untuk mengambil baris data dari sheet tertentu:
+ * 1. Jika memiliki OAuth token aktif, gunakan Google Sheets REST API v4 dengan UNFORMATTED_VALUE.
+ * 2. Jika berada di Mode Offline / GitHub Pages tanpa OAuth (atau token kedaluwarsa), otomatis fallback ke Public CSV Reader.
+ */
+async function fetchSheetRowsSmart(
+  spreadsheetId: string,
+  sheetTitle: string,
+  rangeCols: string,
+  token?: string | null
+): Promise<any[][]> {
+  const hasOAuth = Boolean(token && token !== 'offline-demo-token');
+  if (hasOAuth && token) {
+    try {
+      const response = await makeRequest(
+        `/${spreadsheetId}/values/${sheetTitle}!${rangeCols}?valueRenderOption=UNFORMATTED_VALUE&dateTimeRenderOption=FORMATTED_STRING`,
+        'GET',
+        token
+      );
+      return response.values || [];
+    } catch (err: any) {
+      // Try public CSV fallback even if token expired or sheet wasn't found via API
+      try {
+        return await pullSheetViaPublicCSV(spreadsheetId, sheetTitle);
+      } catch {
+        if (err?.message?.includes('401') || err?.message?.includes('403') || err?.message?.includes('Izin Google Sheets')) {
+          throw err;
+        }
+        return [];
+      }
+    }
+  }
+
+  // No OAuth token (e.g., Mode Demo Offline on GitHub Pages) -> use Public CSV Reader
+  return await pullSheetViaPublicCSV(spreadsheetId, sheetTitle);
 }
 
 /**
@@ -477,27 +644,28 @@ export async function pushAccountsToSheets(
  */
 export async function pullAccountsFromSheets(
   spreadsheetId: string,
-  token: string
+  token?: string | null
 ): Promise<Account[]> {
   try {
-    const response = await makeRequest(`/${spreadsheetId}/values/AKUN!A2:F1000`, 'GET', token);
-    const rows = response.values || [];
+    const rows = await fetchSheetRowsSmart(spreadsheetId, 'AKUN', 'A2:F1000', token);
 
     return rows.map((row: any) => {
-      let rawType = row[2] || 'Aktiva';
+      let rawType = (row[2] || 'Aktiva').toString().trim();
       if (rawType === 'Aset') rawType = 'Aktiva';
       if (rawType === 'Ekuitas') rawType = 'Modal';
+      const normalRaw = (row[3] || 'Debit').toString().trim();
+      const normalBalance: NormalBalance = normalRaw.toLowerCase() === 'kredit' ? 'Kredit' : 'Debit';
       return {
-        code: row[0] || '',
-        name: row[1] || '',
+        code: (row[0] || '').toString().trim(),
+        name: (row[1] || '').toString().trim(),
         type: rawType as AccountType,
-        normalBalance: (row[3] as NormalBalance) || 'Debit',
-        initialBalance: parseFloat(row[4]) || 0,
-        description: row[5] || ''
+        normalBalance,
+        initialBalance: parseNumberCell(row[4]),
+        description: (row[5] || '').toString()
       };
     }).filter((acc: Account) => acc.code && acc.name);
   } catch (err: any) {
-    if (err?.message?.includes('401') || err?.message?.includes('403') || err?.message?.includes('Izin Google Sheets')) {
+    if (err?.message?.includes('401') || err?.message?.includes('403') || err?.message?.includes('Izin Google Sheets') || err?.message?.includes('privat')) {
       throw err;
     }
     console.warn('Notice when pulling accounts from sheets:', err);
@@ -513,49 +681,45 @@ export async function pushStockSkuToSheets(
   inventory: InventoryItem[],
   token: string
 ): Promise<void> {
-  try {
-    await makeRequest(`/${spreadsheetId}/values/STOCK_SKU!A2:Z5000:clear`, 'POST', token);
+  await makeRequest(`/${spreadsheetId}/values/STOCK_SKU!A2:Z5000:clear`, 'POST', token);
 
-    const rows = inventory.map(item => {
-      const rem = Math.max(0, item.totalQty - item.usedOrSoldQty);
-      const status = resolveItemAvailability(item);
-      const countedStock = status === 'not_for_sale' ? 0 : rem;
-      const uncountedStock = status === 'not_for_sale' ? rem : 0;
+  const rows = inventory.map(item => {
+    const rem = Math.max(0, item.totalQty - item.usedOrSoldQty);
+    const status = resolveItemAvailability(item);
+    const countedStock = status === 'not_for_sale' ? 0 : rem;
+    const uncountedStock = status === 'not_for_sale' ? rem : 0;
 
-      return [
-        item.id,
-        item.sku,
-        item.name,
-        item.productSleeve || (item.category === 'for_sale' ? 'Lengan Pendek' : '-'),
-        item.designStyle || (item.category === 'for_sale' ? 'Oversize' : '-'),
-        item.designGraphic || '-',
-        item.productColor || '-',
-        item.designNumber || '01',
-        item.subCategory || 'Kaos / T-Shirt',
-        item.unit || 'pcs',
-        item.totalQty,
-        item.usedOrSoldQty,
-        countedStock,
-        uncountedStock,
-        formatAvailabilityLabel(status),
-        serializeVariantsForSheet(item.variants),
-        item.location || '',
-        item.notes || '',
-        item.updatedAt || ''
-      ];
-    });
+    return [
+      item.id,
+      item.sku,
+      item.name,
+      item.productSleeve || (item.category === 'for_sale' ? 'Lengan Pendek' : '-'),
+      item.designStyle || (item.category === 'for_sale' ? 'Oversize' : '-'),
+      item.designGraphic || '-',
+      item.productColor || '-',
+      item.designNumber || '01',
+      item.subCategory || 'Kaos / T-Shirt',
+      item.unit || 'pcs',
+      item.totalQty,
+      item.usedOrSoldQty,
+      countedStock,
+      uncountedStock,
+      formatAvailabilityLabel(status),
+      serializeVariantsForSheet(item.variants),
+      item.location || '',
+      item.notes || '',
+      item.updatedAt || ''
+    ];
+  });
 
-    if (rows.length === 0) return;
+  if (rows.length === 0) return;
 
-    await makeRequest(
-      `/${spreadsheetId}/values/STOCK_SKU!A2?valueInputOption=USER_ENTERED`,
-      'PUT',
-      token,
-      { values: rows }
-    );
-  } catch (err) {
-    console.warn('Notice pushing STOCK_SKU to sheets:', err);
-  }
+  await makeRequest(
+    `/${spreadsheetId}/values/STOCK_SKU!A2?valueInputOption=USER_ENTERED`,
+    'PUT',
+    token,
+    { values: rows }
+  );
 }
 
 /**
@@ -566,48 +730,44 @@ export async function pushInventoryToSheets(
   inventory: InventoryItem[],
   token: string
 ): Promise<void> {
-  try {
-    await makeRequest(`/${spreadsheetId}/values/INVENTORY!A2:Z5000:clear`, 'POST', token);
+  await makeRequest(`/${spreadsheetId}/values/INVENTORY!A2:Z5000:clear`, 'POST', token);
 
-    const rows = inventory.map(item => {
-      const rem = Math.max(0, item.totalQty - item.usedOrSoldQty);
-      const totalVal = rem * (item.unitCost || 0);
-      const status = resolveItemAvailability(item);
+  const rows = inventory.map(item => {
+    const rem = Math.max(0, item.totalQty - item.usedOrSoldQty);
+    const totalVal = rem * (item.unitCost || 0);
+    const status = resolveItemAvailability(item);
 
-      return [
-        item.id,
-        item.sku,
-        item.name,
-        item.category === 'for_sale'
-          ? 'Barang untuk Dijual (Persediaan)'
-          : 'Barang untuk Dipakai (Operasional / Tidak Dijual)',
-        item.subCategory || '',
-        item.unit || 'pcs',
-        item.totalQty,
-        item.usedOrSoldQty,
-        rem,
-        formatAvailabilityLabel(status),
-        item.unitCost || 0,
-        item.sellingPrice || 0,
-        totalVal,
-        item.accountCode || (item.category === 'for_sale' ? '1-1005' : '1-1006'),
-        item.location || '',
-        item.notes || '',
-        item.updatedAt || ''
-      ];
-    });
+    return [
+      item.id,
+      item.sku,
+      item.name,
+      item.category === 'for_sale'
+        ? 'Barang untuk Dijual (Persediaan)'
+        : 'Barang untuk Dipakai (Operasional / Tidak Dijual)',
+      item.subCategory || '',
+      item.unit || 'pcs',
+      item.totalQty,
+      item.usedOrSoldQty,
+      rem,
+      formatAvailabilityLabel(status),
+      item.unitCost || 0,
+      item.sellingPrice || 0,
+      totalVal,
+      item.accountCode || (item.category === 'for_sale' ? '1-1005' : '1-1006'),
+      item.location || '',
+      item.notes || '',
+      item.updatedAt || ''
+    ];
+  });
 
-    if (rows.length === 0) return;
+  if (rows.length === 0) return;
 
-    await makeRequest(
-      `/${spreadsheetId}/values/INVENTORY!A2?valueInputOption=USER_ENTERED`,
-      'PUT',
-      token,
-      { values: rows }
-    );
-  } catch (err) {
-    console.warn('Notice pushing INVENTORY to sheets:', err);
-  }
+  await makeRequest(
+    `/${spreadsheetId}/values/INVENTORY!A2?valueInputOption=USER_ENTERED`,
+    'PUT',
+    token,
+    { values: rows }
+  );
 }
 
 /**
@@ -615,30 +775,27 @@ export async function pushInventoryToSheets(
  */
 export async function pullInventoryFromSheets(
   spreadsheetId: string,
-  token: string
+  token?: string | null
 ): Promise<InventoryItem[]> {
   try {
-    const [invRes, skuRes] = await Promise.all([
-      makeRequest(`/${spreadsheetId}/values/INVENTORY!A2:Q5000`, 'GET', token).catch(() => ({ values: [] })),
-      makeRequest(`/${spreadsheetId}/values/STOCK_SKU!A2:S5000`, 'GET', token).catch(() => ({ values: [] }))
+    const [invRows, skuRows] = await Promise.all([
+      fetchSheetRowsSmart(spreadsheetId, 'INVENTORY', 'A2:Q5000', token).catch(() => []),
+      fetchSheetRowsSmart(spreadsheetId, 'STOCK_SKU', 'A2:S5000', token).catch(() => [])
     ]);
-
-    const invRows: any[] = invRes.values || [];
-    const skuRows: any[] = skuRes.values || [];
 
     // Build map of extra SKU metadata from STOCK_SKU sheet
     const skuMetaMap = new Map<string, any>();
     skuRows.forEach(r => {
-      const idOrSku = r[0] || r[1];
-      if (idOrSku) {
-        skuMetaMap.set(idOrSku, r);
-      }
+      const id = (r[0] || '').toString().trim();
+      const sku = (r[1] || '').toString().trim();
+      if (id) skuMetaMap.set(id, r);
+      if (sku) skuMetaMap.set(sku, r);
     });
 
     if (invRows.length > 0) {
       return invRows.map((row: any, idx: number) => {
-        const id = row[0] || `INV-SH-${Date.now()}-${idx}`;
-        const sku = row[1] || `TM-SKU-${idx + 1}`;
+        const id = (row[0] || `INV-SH-${Date.now()}-${idx}`).toString().trim();
+        const sku = (row[1] || `TM-SKU-${idx + 1}`).toString().trim();
         const skuMeta = skuMetaMap.get(id) || skuMetaMap.get(sku);
 
         const rawCat = (row[3] || '').toString().toLowerCase();
@@ -647,27 +804,27 @@ export async function pullInventoryFromSheets(
             ? 'internal_use'
             : 'for_sale';
 
-        const totalQty = parseFloat(row[6]) || 0;
-        const usedOrSoldQty = parseFloat(row[7]) || 0;
+        const totalQty = parseNumberCell(row[6]);
+        const usedOrSoldQty = parseNumberCell(row[7]);
         const remainingQty = Math.max(0, totalQty - usedOrSoldQty);
-        const unitCost = parseFloat(row[10]) || 0;
-        const sellingPrice = parseFloat(row[11]) || 0;
+        const unitCost = parseNumberCell(row[10]);
+        const sellingPrice = parseNumberCell(row[11]);
 
         const statusStr = skuMeta ? (skuMeta[14] || row[9] || '') : (row[9] || '');
-        const availabilityStatus = parseAvailabilityLabel(statusStr, category, remainingQty);
+        const availabilityStatus = parseAvailabilityLabel(statusStr.toString(), category, remainingQty);
 
         return {
           id,
           sku,
-          name: row[2] || 'Produk Inventory',
-          productSleeve: skuMeta && skuMeta[3] !== '-' ? skuMeta[3] : undefined,
-          designStyle: skuMeta && skuMeta[4] !== '-' ? skuMeta[4] : undefined,
-          designGraphic: skuMeta && skuMeta[5] !== '-' ? skuMeta[5] : undefined,
-          productColor: skuMeta && skuMeta[6] !== '-' ? skuMeta[6] : undefined,
-          designNumber: skuMeta && skuMeta[7] !== '-' ? skuMeta[7] : undefined,
+          name: (row[2] || 'Produk Inventory').toString().trim(),
+          productSleeve: skuMeta && skuMeta[3] && skuMeta[3] !== '-' ? skuMeta[3].toString() : undefined,
+          designStyle: skuMeta && skuMeta[4] && skuMeta[4] !== '-' ? skuMeta[4].toString() : undefined,
+          designGraphic: skuMeta && skuMeta[5] && skuMeta[5] !== '-' ? skuMeta[5].toString() : undefined,
+          productColor: skuMeta && skuMeta[6] && skuMeta[6] !== '-' ? skuMeta[6].toString() : undefined,
+          designNumber: skuMeta && skuMeta[7] && skuMeta[7] !== '-' ? skuMeta[7].toString() : undefined,
           category,
-          subCategory: row[4] || 'Kaos / T-Shirt',
-          unit: row[5] || 'pcs',
+          subCategory: (row[4] || 'Kaos / T-Shirt').toString(),
+          unit: (row[5] || 'pcs').toString(),
           totalQty,
           usedOrSoldQty,
           remainingQty,
@@ -676,11 +833,11 @@ export async function pullInventoryFromSheets(
           unitCost,
           sellingPrice,
           totalRemainingValue: remainingQty * unitCost,
-          accountCode: row[13] || (category === 'for_sale' ? '1-1005' : '1-1006'),
-          variants: skuMeta ? parseVariantsFromSheet(skuMeta[15] || '', sku) : undefined,
-          location: row[14] || (skuMeta ? skuMeta[16] : '') || '',
-          notes: row[15] || (skuMeta ? skuMeta[17] : '') || '',
-          updatedAt: row[16] || (skuMeta ? skuMeta[18] : '') || new Date().toISOString().split('T')[0]
+          accountCode: (row[13] || (category === 'for_sale' ? '1-1005' : '1-1006')).toString().trim(),
+          variants: skuMeta ? parseVariantsFromSheet((skuMeta[15] || '').toString(), sku) : undefined,
+          location: (row[14] || (skuMeta ? skuMeta[16] : '') || '').toString(),
+          notes: (row[15] || (skuMeta ? skuMeta[17] : '') || '').toString(),
+          updatedAt: (row[16] || (skuMeta ? skuMeta[18] : '') || new Date().toISOString().split('T')[0]).toString()
         };
       }).filter((item: InventoryItem) => item.name && item.sku);
     }
@@ -688,26 +845,26 @@ export async function pullInventoryFromSheets(
     // Fallback if only STOCK_SKU has rows
     if (skuRows.length > 0) {
       return skuRows.map((row: any, idx: number) => {
-        const id = row[0] || `INV-SH-${Date.now()}-${idx}`;
-        const sku = row[1] || `TM-SKU-${idx + 1}`;
-        const totalQty = parseFloat(row[10]) || 0;
-        const usedOrSoldQty = parseFloat(row[11]) || 0;
+        const id = (row[0] || `INV-SH-${Date.now()}-${idx}`).toString().trim();
+        const sku = (row[1] || `TM-SKU-${idx + 1}`).toString().trim();
+        const totalQty = parseNumberCell(row[10]);
+        const usedOrSoldQty = parseNumberCell(row[11]);
         const remainingQty = Math.max(0, totalQty - usedOrSoldQty);
-        const availabilityStatus = parseAvailabilityLabel(row[14] || '', 'for_sale', remainingQty);
+        const availabilityStatus = parseAvailabilityLabel((row[14] || '').toString(), 'for_sale', remainingQty);
         const category: InventoryCategory = availabilityStatus === 'not_for_sale' ? 'internal_use' : 'for_sale';
 
         return {
           id,
           sku,
-          name: row[2] || 'Produk SKU',
-          productSleeve: row[3] !== '-' ? row[3] : undefined,
-          designStyle: row[4] !== '-' ? row[4] : undefined,
-          designGraphic: row[5] !== '-' ? row[5] : undefined,
-          productColor: row[6] !== '-' ? row[6] : undefined,
-          designNumber: row[7] !== '-' ? row[7] : undefined,
+          name: (row[2] || 'Produk SKU').toString().trim(),
+          productSleeve: row[3] && row[3] !== '-' ? row[3].toString() : undefined,
+          designStyle: row[4] && row[4] !== '-' ? row[4].toString() : undefined,
+          designGraphic: row[5] && row[5] !== '-' ? row[5].toString() : undefined,
+          productColor: row[6] && row[6] !== '-' ? row[6].toString() : undefined,
+          designNumber: row[7] && row[7] !== '-' ? row[7].toString() : undefined,
           category,
-          subCategory: row[8] || 'Kaos / T-Shirt',
-          unit: row[9] || 'pcs',
+          subCategory: (row[8] || 'Kaos / T-Shirt').toString(),
+          unit: (row[9] || 'pcs').toString(),
           totalQty,
           usedOrSoldQty,
           remainingQty,
@@ -717,17 +874,17 @@ export async function pullInventoryFromSheets(
           sellingPrice: 0,
           totalRemainingValue: 0,
           accountCode: category === 'for_sale' ? '1-1005' : '1-1006',
-          variants: parseVariantsFromSheet(row[15] || '', sku),
-          location: row[16] || '',
-          notes: row[17] || '',
-          updatedAt: row[18] || new Date().toISOString().split('T')[0]
+          variants: parseVariantsFromSheet((row[15] || '').toString(), sku),
+          location: (row[16] || '').toString(),
+          notes: (row[17] || '').toString(),
+          updatedAt: (row[18] || new Date().toISOString().split('T')[0]).toString()
         };
       }).filter((item: InventoryItem) => item.name && item.sku);
     }
 
     return [];
   } catch (err: any) {
-    if (err?.message?.includes('401') || err?.message?.includes('403') || err?.message?.includes('Izin Google Sheets')) {
+    if (err?.message?.includes('401') || err?.message?.includes('403') || err?.message?.includes('Izin Google Sheets') || err?.message?.includes('privat')) {
       throw err;
     }
     console.warn('Notice when pulling inventory from sheets:', err);
@@ -743,45 +900,41 @@ export async function pushSalesToSheets(
   sales: SaleOrder[],
   token: string
 ): Promise<void> {
-  try {
-    await makeRequest(`/${spreadsheetId}/values/PENJUALAN!A2:Z5000:clear`, 'POST', token);
+  await makeRequest(`/${spreadsheetId}/values/PENJUALAN!A2:Z5000:clear`, 'POST', token);
 
-    const rows = sales.map(s => [
-      s.id,
-      s.orderDate,
-      s.settledDate || '-',
-      s.invoiceNum,
-      s.channel,
-      s.customerName,
-      s.productName,
-      s.qty,
-      s.unitPrice,
-      s.discountAmount || 0,
-      s.grossTransacted,
-      s.marketplaceFee || 0,
-      s.netPayout,
-      s.hppPerPiece || 0,
-      s.totalHpp || 0,
-      s.estimatedNetProfit,
-      s.status === 'settled' ? 'SUDAH CAIR (SETTLED)' : 'PENDING (TERTAHAN)',
-      s.targetAccountCode || '1-1003',
-      s.revenueAccountCode || '4-1001',
-      s.feeAccountCode || '5-1008',
-      s.notes || '',
-      s.createdAt || ''
-    ]);
+  const rows = sales.map(s => [
+    s.id,
+    s.orderDate,
+    s.settledDate || '-',
+    s.invoiceNum,
+    s.channel,
+    s.customerName,
+    s.productName,
+    s.qty,
+    s.unitPrice,
+    s.discountAmount || 0,
+    s.grossTransacted,
+    s.marketplaceFee || 0,
+    s.netPayout,
+    s.hppPerPiece || 0,
+    s.totalHpp || 0,
+    s.estimatedNetProfit,
+    s.status === 'settled' ? 'SUDAH CAIR (SETTLED)' : 'PENDING (TERTAHAN)',
+    s.targetAccountCode || '1-1003',
+    s.revenueAccountCode || '4-1001',
+    s.feeAccountCode || '5-1008',
+    s.notes || '',
+    s.createdAt || ''
+  ]);
 
-    if (rows.length === 0) return;
+  if (rows.length === 0) return;
 
-    await makeRequest(
-      `/${spreadsheetId}/values/PENJUALAN!A2?valueInputOption=USER_ENTERED`,
-      'PUT',
-      token,
-      { values: rows }
-    );
-  } catch (err) {
-    console.warn('Notice pushing PENJUALAN to sheets:', err);
-  }
+  await makeRequest(
+    `/${spreadsheetId}/values/PENJUALAN!A2?valueInputOption=USER_ENTERED`,
+    'PUT',
+    token,
+    { values: rows }
+  );
 }
 
 /**
@@ -789,33 +942,32 @@ export async function pushSalesToSheets(
  */
 export async function pullSalesFromSheets(
   spreadsheetId: string,
-  token: string
+  token?: string | null
 ): Promise<SaleOrder[]> {
   try {
-    const response = await makeRequest(`/${spreadsheetId}/values/PENJUALAN!A2:V5000`, 'GET', token);
-    const rows = response.values || [];
+    const rows = await fetchSheetRowsSmart(spreadsheetId, 'PENJUALAN', 'A2:V5000', token);
 
     return rows.map((row: any, idx: number) => {
       const statusRaw = (row[16] || '').toString().toUpperCase();
       const status: SaleStatus = statusRaw.includes('CAIR') || statusRaw.includes('SETTLED') ? 'settled' : 'pending';
-      const qty = parseFloat(row[7]) || 1;
-      const unitPrice = parseFloat(row[8]) || 0;
-      const discountAmount = parseFloat(row[9]) || 0;
-      const grossTransacted = parseFloat(row[10]) || Math.max(0, qty * unitPrice - discountAmount);
-      const marketplaceFee = parseFloat(row[11]) || 0;
-      const netPayout = parseFloat(row[12]) || Math.max(0, grossTransacted - marketplaceFee);
-      const hppPerPiece = parseFloat(row[13]) || 0;
-      const totalHpp = parseFloat(row[14]) || qty * hppPerPiece;
-      const estimatedNetProfit = parseFloat(row[15]) || (netPayout - totalHpp);
+      const qty = parseNumberCell(row[7]) || 1;
+      const unitPrice = parseNumberCell(row[8]);
+      const discountAmount = parseNumberCell(row[9]);
+      const grossTransacted = parseNumberCell(row[10]) || Math.max(0, qty * unitPrice - discountAmount);
+      const marketplaceFee = parseNumberCell(row[11]);
+      const netPayout = parseNumberCell(row[12]) || Math.max(0, grossTransacted - marketplaceFee);
+      const hppPerPiece = parseNumberCell(row[13]);
+      const totalHpp = parseNumberCell(row[14]) || qty * hppPerPiece;
+      const estimatedNetProfit = parseNumberCell(row[15]) || (netPayout - totalHpp);
 
       return {
-        id: row[0] || `SLS-SH-${Date.now()}-${idx}`,
-        orderDate: row[1] || new Date().toISOString().split('T')[0],
-        settledDate: row[2] && row[2] !== '-' ? row[2] : undefined,
-        invoiceNum: row[3] || `INV-${idx + 1}`,
-        channel: (row[4] as SaleChannel) || 'Shopee',
-        customerName: row[5] || 'Pelanggan Marketplace',
-        productName: row[6] || 'Produk Three Mister',
+        id: (row[0] || `SLS-SH-${Date.now()}-${idx}`).toString().trim(),
+        orderDate: (row[1] || new Date().toISOString().split('T')[0]).toString().trim(),
+        settledDate: row[2] && row[2] !== '-' ? row[2].toString().trim() : undefined,
+        invoiceNum: (row[3] || `INV-${idx + 1}`).toString().trim(),
+        channel: ((row[4] || 'Shopee').toString().trim() as SaleChannel),
+        customerName: (row[5] || 'Pelanggan Marketplace').toString().trim(),
+        productName: (row[6] || 'Produk Three Mister').toString().trim(),
         qty,
         unitPrice,
         discountAmount,
@@ -826,19 +978,19 @@ export async function pullSalesFromSheets(
         totalHpp,
         estimatedNetProfit,
         status,
-        targetAccountCode: row[17] || '1-1003',
-        revenueAccountCode: row[18] || '4-1001',
-        feeAccountCode: row[19] || '5-1008',
+        targetAccountCode: (row[17] || '1-1003').toString().trim(),
+        revenueAccountCode: (row[18] || '4-1001').toString().trim(),
+        feeAccountCode: (row[19] || '5-1008').toString().trim(),
         recordFeeSeparately: true,
         recordHppAuto: true,
         hppDebitAccountCode: '5-1001',
         hppCreditAccountCode: '1-1005',
-        notes: row[20] || '',
-        createdAt: row[21] || new Date().toISOString()
+        notes: (row[20] || '').toString(),
+        createdAt: (row[21] || new Date().toISOString()).toString()
       };
     }).filter((s: SaleOrder) => s.invoiceNum && s.productName);
   } catch (err: any) {
-    if (err?.message?.includes('401') || err?.message?.includes('403') || err?.message?.includes('Izin Google Sheets')) {
+    if (err?.message?.includes('401') || err?.message?.includes('403') || err?.message?.includes('Izin Google Sheets') || err?.message?.includes('privat')) {
       throw err;
     }
     console.warn('Notice when pulling sales from sheets:', err);
@@ -882,24 +1034,23 @@ export async function pushTransactionsToSheets(
  */
 export async function pullTransactionsFromSheets(
   spreadsheetId: string,
-  token: string
+  token?: string | null
 ): Promise<Transaction[]> {
   try {
-    const response = await makeRequest(`/${spreadsheetId}/values/TRANSAKSI!A2:H10000`, 'GET', token);
-    const rows = response.values || [];
+    const rows = await fetchSheetRowsSmart(spreadsheetId, 'TRANSAKSI', 'A2:H10000', token);
 
     return rows.map((row: any) => ({
-      id: row[0] || '',
-      date: row[1] || '',
-      refNum: row[2] || '',
-      description: row[3] || '',
-      debitAccount: row[4] || '',
-      creditAccount: row[5] || '',
-      amount: parseFloat(row[6]) || 0,
-      createdAt: row[7] || ''
+      id: (row[0] || '').toString().trim(),
+      date: (row[1] || '').toString().trim(),
+      refNum: (row[2] || '').toString().trim(),
+      description: (row[3] || '').toString(),
+      debitAccount: (row[4] || '').toString().trim(),
+      creditAccount: (row[5] || '').toString().trim(),
+      amount: parseNumberCell(row[6]),
+      createdAt: (row[7] || '').toString()
     })).filter((trx: Transaction) => trx.id && trx.debitAccount && trx.creditAccount);
   } catch (err: any) {
-    if (err?.message?.includes('401') || err?.message?.includes('403') || err?.message?.includes('Izin Google Sheets')) {
+    if (err?.message?.includes('401') || err?.message?.includes('403') || err?.message?.includes('Izin Google Sheets') || err?.message?.includes('privat')) {
       throw err;
     }
     console.warn('Notice when pulling transactions from sheets:', err);
@@ -915,41 +1066,37 @@ export async function pushHPPToSheets(
   hppCalcs: SavedCalculation[],
   token: string
 ): Promise<void> {
-  try {
-    await makeRequest(`/${spreadsheetId}/values/HPP_PRODUK!A2:Z2000:clear`, 'POST', token);
+  await makeRequest(`/${spreadsheetId}/values/HPP_PRODUK!A2:Z2000:clear`, 'POST', token);
 
-    const rows = hppCalcs.map(c => [
-      c.id,
-      c.productName,
-      c.qty,
-      c.rawMaterialType === 'kain' ? 'Kain Roll (CMT)' : c.rawMaterialType === 'both' ? 'Kombinasi' : 'Baju Jadi',
-      c.fabricCost,
-      c.printCost || 0,
-      c.cmtCost || 0,
-      c.accessoriesCost || 0,
-      c.packagingCost || 0,
-      c.otherCost || 0,
-      c.totalCost,
-      c.hppPerPiece,
-      `${c.targetMargin}%`,
-      c.retailPrice,
-      c.wholesalePrice || 0,
-      c.isBenchmark ? '⭐ BENCHMARK UTAMA' : 'Kalkulasi Artikel',
-      c.notes || '',
-      c.createdAt || ''
-    ]);
+  const rows = hppCalcs.map(c => [
+    c.id,
+    c.productName,
+    c.qty,
+    c.rawMaterialType === 'kain' ? 'Kain Roll (CMT)' : c.rawMaterialType === 'both' ? 'Kombinasi' : 'Baju Jadi',
+    c.fabricCost,
+    c.printCost || 0,
+    c.cmtCost || 0,
+    c.accessoriesCost || 0,
+    c.packagingCost || 0,
+    c.otherCost || 0,
+    c.totalCost,
+    c.hppPerPiece,
+    `${c.targetMargin}%`,
+    c.retailPrice,
+    c.wholesalePrice || 0,
+    c.isBenchmark ? '⭐ BENCHMARK UTAMA' : 'Kalkulasi Artikel',
+    c.notes || '',
+    c.createdAt || ''
+  ]);
 
-    if (rows.length === 0) return;
+  if (rows.length === 0) return;
 
-    await makeRequest(
-      `/${spreadsheetId}/values/HPP_PRODUK!A2?valueInputOption=USER_ENTERED`,
-      'PUT',
-      token,
-      { values: rows }
-    );
-  } catch (err) {
-    console.warn('Notice pushing HPP to sheets:', err);
-  }
+  await makeRequest(
+    `/${spreadsheetId}/values/HPP_PRODUK!A2?valueInputOption=USER_ENTERED`,
+    'PUT',
+    token,
+    { values: rows }
+  );
 }
 
 /**
@@ -957,38 +1104,38 @@ export async function pushHPPToSheets(
  */
 export async function pullHPPFromSheets(
   spreadsheetId: string,
-  token: string
+  token?: string | null
 ): Promise<SavedCalculation[]> {
   try {
-    const response = await makeRequest(`/${spreadsheetId}/values/HPP_PRODUK!A2:R2000`, 'GET', token);
-    const rows = response.values || [];
+    const rows = await fetchSheetRowsSmart(spreadsheetId, 'HPP_PRODUK', 'A2:R2000', token);
 
-    return rows.map((row: any) => {
+    return rows.map((row: any): SavedCalculation => {
       const isBench = (row[15] || '').toString().toUpperCase().includes('BENCHMARK') || (row[15] || '').toString().toUpperCase() === 'YA';
       const marginRaw = (row[12] || '60').toString().replace('%', '').trim();
+      const rawMat: 'baju_jadi' | 'kain' | 'both' = (row[3] || '').toString().includes('Kain') ? 'kain' : (row[3] || '').toString().includes('Kombinasi') ? 'both' : 'baju_jadi';
       return {
-        id: row[0] || `HPP-${Date.now()}-${Math.random().toString(36).substr(2, 4)}`,
-        productName: row[1] || 'Artikel Pakaian',
-        qty: parseInt(row[2]) || 100,
-        rawMaterialType: (row[3] || '').includes('Kain') ? 'kain' : (row[3] || '').includes('Kombinasi') ? 'both' : 'baju_jadi',
-        fabricCost: parseFloat(row[4]) || 0,
-        printCost: parseFloat(row[5]) || 0,
-        cmtCost: parseFloat(row[6]) || 0,
-        accessoriesCost: parseFloat(row[7]) || 0,
-        packagingCost: parseFloat(row[8]) || 0,
-        otherCost: parseFloat(row[9]) || 0,
-        totalCost: parseFloat(row[10]) || 0,
-        hppPerPiece: parseFloat(row[11]) || 0,
-        targetMargin: parseFloat(marginRaw) || 60,
-        retailPrice: parseFloat(row[13]) || 0,
-        wholesalePrice: parseFloat(row[14]) || 0,
+        id: (row[0] || `HPP-${Date.now()}-${Math.random().toString(36).substr(2, 4)}`).toString().trim(),
+        productName: (row[1] || 'Artikel Pakaian').toString().trim(),
+        qty: parseNumberCell(row[2]) || 100,
+        rawMaterialType: rawMat,
+        fabricCost: parseNumberCell(row[4]),
+        printCost: parseNumberCell(row[5]),
+        cmtCost: parseNumberCell(row[6]),
+        accessoriesCost: parseNumberCell(row[7]),
+        packagingCost: parseNumberCell(row[8]),
+        otherCost: parseNumberCell(row[9]),
+        totalCost: parseNumberCell(row[10]),
+        hppPerPiece: parseNumberCell(row[11]),
+        targetMargin: parseNumberCell(marginRaw) || 60,
+        retailPrice: parseNumberCell(row[13]),
+        wholesalePrice: parseNumberCell(row[14]),
         isBenchmark: isBench,
-        notes: row[16] || '',
-        createdAt: row[17] || ''
+        notes: (row[16] || '').toString(),
+        createdAt: (row[17] || '').toString()
       };
-    }).filter((c: SavedCalculation) => c.productName && c.hppPerPiece > 0);
+    }).filter((c: SavedCalculation) => Boolean(c.productName && c.hppPerPiece > 0));
   } catch (err: any) {
-    if (err?.message?.includes('401') || err?.message?.includes('403') || err?.message?.includes('Izin Google Sheets')) {
+    if (err?.message?.includes('401') || err?.message?.includes('403') || err?.message?.includes('Izin Google Sheets') || err?.message?.includes('privat')) {
       throw err;
     }
     console.warn('Notice when pulling HPP from sheets:', err);
@@ -1004,30 +1151,26 @@ export async function pushMarketplaceHistoryToSheets(
   marketplaceHistory: MarketplacePricingHistory[],
   token: string
 ): Promise<void> {
-  try {
-    await makeRequest(`/${spreadsheetId}/values/HARGA_MARKETPLACE!A2:Z1000:clear`, 'POST', token);
+  await makeRequest(`/${spreadsheetId}/values/HARGA_MARKETPLACE!A2:Z1000:clear`, 'POST', token);
 
-    const rows = marketplaceHistory.map(m => [
-      m.id,
-      m.productName,
-      m.hpp,
-      m.mode === 'target' ? 'Target Laba Bersih' : 'Simulasi Harga Jual',
-      m.targetProfit,
-      m.sellingPrice,
-      m.date
-    ]);
+  const rows = marketplaceHistory.map(m => [
+    m.id,
+    m.productName,
+    m.hpp,
+    m.mode === 'target' ? 'Target Laba Bersih' : 'Simulasi Harga Jual',
+    m.targetProfit,
+    m.sellingPrice,
+    m.date
+  ]);
 
-    if (rows.length === 0) return;
+  if (rows.length === 0) return;
 
-    await makeRequest(
-      `/${spreadsheetId}/values/HARGA_MARKETPLACE!A2?valueInputOption=USER_ENTERED`,
-      'PUT',
-      token,
-      { values: rows }
-    );
-  } catch (err) {
-    console.warn('Notice pushing HARGA_MARKETPLACE to sheets:', err);
-  }
+  await makeRequest(
+    `/${spreadsheetId}/values/HARGA_MARKETPLACE!A2?valueInputOption=USER_ENTERED`,
+    'PUT',
+    token,
+    { values: rows }
+  );
 }
 
 /**
@@ -1035,23 +1178,22 @@ export async function pushMarketplaceHistoryToSheets(
  */
 export async function pullMarketplaceHistoryFromSheets(
   spreadsheetId: string,
-  token: string
+  token?: string | null
 ): Promise<MarketplacePricingHistory[]> {
   try {
-    const response = await makeRequest(`/${spreadsheetId}/values/HARGA_MARKETPLACE!A2:G1000`, 'GET', token);
-    const rows = response.values || [];
+    const rows = await fetchSheetRowsSmart(spreadsheetId, 'HARGA_MARKETPLACE', 'A2:G1000', token);
 
     return rows.map((row: any, idx: number) => ({
-      id: row[0] || `MP-SH-${Date.now()}-${idx}`,
-      productName: row[1] || 'Produk THREE MISTER',
-      hpp: parseFloat(row[2]) || 0,
+      id: (row[0] || `MP-SH-${Date.now()}-${idx}`).toString().trim(),
+      productName: (row[1] || 'Produk THREE MISTER').toString().trim(),
+      hpp: parseNumberCell(row[2]),
       mode: (row[3] || '').toString().toLowerCase().includes('simulasi') ? ('simulate' as const) : ('target' as const),
-      targetProfit: parseFloat(row[4]) || 0,
-      sellingPrice: parseFloat(row[5]) || 0,
-      date: row[6] || new Date().toLocaleDateString('id-ID')
+      targetProfit: parseNumberCell(row[4]),
+      sellingPrice: parseNumberCell(row[5]),
+      date: (row[6] || new Date().toLocaleDateString('id-ID')).toString()
     })).filter((m: MarketplacePricingHistory) => m.productName && m.sellingPrice > 0);
   } catch (err: any) {
-    if (err?.message?.includes('401') || err?.message?.includes('403') || err?.message?.includes('Izin Google Sheets')) {
+    if (err?.message?.includes('401') || err?.message?.includes('403') || err?.message?.includes('Izin Google Sheets') || err?.message?.includes('privat')) {
       throw err;
     }
     console.warn('Notice when pulling marketplace history from sheets:', err);
@@ -1067,46 +1209,42 @@ export async function pushSummaryToSheets(
   summary: FinancialSummaryData,
   token: string
 ): Promise<void> {
-  try {
-    await makeRequest(`/${spreadsheetId}/values/RINGKASAN_KEUANGAN!A2:Z100:clear`, 'POST', token);
+  await makeRequest(`/${spreadsheetId}/values/RINGKASAN_KEUANGAN!A2:Z100:clear`, 'POST', token);
 
-    const rows: (string | number)[][] = [
-      ['Total Pendapatan Penjualan', formatRupiahText(summary.totalRevenue), 'Total penerimaan dari penjualan produk clothing'],
-      ['Total Harga Pokok Penjualan (HPP)', formatRupiahText(summary.totalHPP), 'Beban pokok produksi produk pakaian yang terjual'],
-      ['Laba Kotor (Gross Profit)', formatRupiahText(summary.grossProfit), 'Pendapatan dikurangi HPP produk'],
-      ['Total Beban Operasional', formatRupiahText(summary.totalExpenses), 'Beban sewa, gaji, promosi, & utilitas operasional'],
-      ['Laba Bersih Usaha (Net Profit)', formatRupiahText(summary.netProfit), summary.netProfit >= 0 ? 'Surplus laba bersih operasional' : 'Defisit operasional saat ini'],
-      ['Total Saldo Kas & Bank', formatRupiahText(summary.totalCash), 'Likuiditas dana cair di kas dan rekening perbankan'],
-      ['Total Piutang Usaha', formatRupiahText(summary.totalReceivables), 'Tagihan penjualan dan kredit pelanggan berjalan'],
-      ['Total Persediaan Barang (COA)', formatRupiahText(summary.totalInventory), 'Nilai persediaan baju jadi, kain roll, & aksesoris'],
-      ['Nilai Inventory Barang Belum Terjual (Siap Jual)', formatRupiahText(summary.totalInventoryForSaleValue || 0), 'Total nilai modal barang dagangan yang belum terjual'],
-      ['Nilai Inventory Barang Dipakai (Operasional / Tidak Dijual)', formatRupiahText(summary.totalInventoryInternalValue || 0), 'Total nilai perlengkapan & peralatan operasional'],
-      ['Status Ketersediaan Produk (Stock & SKU)', `${summary.totalStockAvailableProducts || 0} Tersedia | ${summary.totalStockUnavailableProducts || 0} Habis | ${summary.totalStockNotForSaleProducts || 0} Tidak Dijual`, 'Rekap status ketersediaan artikel pada modul Stock & Kode SKU Otomatis'],
-      ['Total Kuantitas Stock Produk', `${summary.totalStockCountedPcs || 0} Pcs Siap Jual | ${summary.totalStockUncountedPcs || 0} Pcs Stock Tidak Terhitung`, 'Pemisahan otomatis stok siap jual dan stock tidak terhitung (produk tidak dijual)'],
-      ['Penjualan Marketplace Masih Pending (Tertahan)', `${summary.totalPendingSalesCount || 0} Pesanan (${formatRupiahText(summary.totalPendingSalesNet || 0)})`, 'Dana penjualan yang masih tertahan di escrow marketplace'],
-      ['Penjualan Sudah Cair (Masuk Rekening & Jurnal)', `${summary.totalSettledSalesCount || 0} Pesanan (${formatRupiahText(summary.totalSettledSalesNet || 0)})`, 'Dana penjualan yang telah cair dan masuk ke Transaksi & Jurnal Umum'],
-      ['Total Aset / Aktiva', formatRupiahText(summary.totalAssets), 'Total seluruh kekayaan dan aset bisnis'],
-      ['Total Kewajiban / Hutang', formatRupiahText(summary.totalLiabilities), 'Kewajiban hutang usaha jangka pendek dan panjang'],
-      ['Total Ekuitas / Modal', formatRupiahText(summary.totalEquity), 'Total modal disetor dan saldo laba yang ditahan'],
-      ['Status Keseimbangan Neraca Saldo', summary.isTrialBalanced ? 'SEIMBANG (BALANCED)' : `SELISIH ${formatRupiahText(summary.trialBalanceDiff)}`, summary.isTrialBalanced ? 'Posisi total debit dan kredit klop sempurna' : 'Terdapat selisih nominal debit dan kredit'],
-      ['Terakhir Disinkronkan', summary.lastUpdated, 'Timestamp sinkronisasi real-time otomatis dari website'],
-    ];
+  const rows: (string | number)[][] = [
+    ['Total Pendapatan Penjualan', formatRupiahText(summary.totalRevenue), 'Total penerimaan dari penjualan produk clothing'],
+    ['Total Harga Pokok Penjualan (HPP)', formatRupiahText(summary.totalHPP), 'Beban pokok produksi produk pakaian yang terjual'],
+    ['Laba Kotor (Gross Profit)', formatRupiahText(summary.grossProfit), 'Pendapatan dikurangi HPP produk'],
+    ['Total Beban Operasional', formatRupiahText(summary.totalExpenses), 'Beban sewa, gaji, promosi, & utilitas operasional'],
+    ['Laba Bersih Usaha (Net Profit)', formatRupiahText(summary.netProfit), summary.netProfit >= 0 ? 'Surplus laba bersih operasional' : 'Defisit operasional saat ini'],
+    ['Total Saldo Kas & Bank', formatRupiahText(summary.totalCash), 'Likuiditas dana cair di kas dan rekening perbankan'],
+    ['Total Piutang Usaha', formatRupiahText(summary.totalReceivables), 'Tagihan penjualan dan kredit pelanggan berjalan'],
+    ['Total Persediaan Barang (COA)', formatRupiahText(summary.totalInventory), 'Nilai persediaan baju jadi, kain roll, & aksesoris'],
+    ['Nilai Inventory Barang Belum Terjual (Siap Jual)', formatRupiahText(summary.totalInventoryForSaleValue || 0), 'Total nilai modal barang dagangan yang belum terjual'],
+    ['Nilai Inventory Barang Dipakai (Operasional / Tidak Dijual)', formatRupiahText(summary.totalInventoryInternalValue || 0), 'Total nilai perlengkapan & peralatan operasional'],
+    ['Status Ketersediaan Produk (Stock & SKU)', `${summary.totalStockAvailableProducts || 0} Tersedia | ${summary.totalStockUnavailableProducts || 0} Habis | ${summary.totalStockNotForSaleProducts || 0} Tidak Dijual`, 'Rekap status ketersediaan artikel pada modul Stock & Kode SKU Otomatis'],
+    ['Total Kuantitas Stock Produk', `${summary.totalStockCountedPcs || 0} Pcs Siap Jual | ${summary.totalStockUncountedPcs || 0} Pcs Stock Tidak Terhitung`, 'Pemisahan otomatis stok siap jual dan stock tidak terhitung (produk tidak dijual)'],
+    ['Penjualan Marketplace Masih Pending (Tertahan)', `${summary.totalPendingSalesCount || 0} Pesanan (${formatRupiahText(summary.totalPendingSalesNet || 0)})`, 'Dana penjualan yang masih tertahan di escrow marketplace'],
+    ['Penjualan Sudah Cair (Masuk Rekening & Jurnal)', `${summary.totalSettledSalesCount || 0} Pesanan (${formatRupiahText(summary.totalSettledSalesNet || 0)})`, 'Dana penjualan yang telah cair dan masuk ke Transaksi & Jurnal Umum'],
+    ['Total Aset / Aktiva', formatRupiahText(summary.totalAssets), 'Total seluruh kekayaan dan aset bisnis'],
+    ['Total Kewajiban / Hutang', formatRupiahText(summary.totalLiabilities), 'Kewajiban hutang usaha jangka pendek dan panjang'],
+    ['Total Ekuitas / Modal', formatRupiahText(summary.totalEquity), 'Total modal disetor dan saldo laba yang ditahan'],
+    ['Status Keseimbangan Neraca Saldo', summary.isTrialBalanced ? 'SEIMBANG (BALANCED)' : `SELISIH ${formatRupiahText(summary.trialBalanceDiff)}`, summary.isTrialBalanced ? 'Posisi total debit dan kredit klop sempurna' : 'Terdapat selisih nominal debit dan kredit'],
+    ['Terakhir Disinkronkan', summary.lastUpdated, 'Timestamp sinkronisasi real-time otomatis dari website'],
+  ];
 
-    await makeRequest(
-      `/${spreadsheetId}/values/RINGKASAN_KEUANGAN!A2?valueInputOption=USER_ENTERED`,
-      'PUT',
-      token,
-      { values: rows }
-    );
-  } catch (err) {
-    console.warn('Notice pushing financial summary to sheets:', err);
-  }
+  await makeRequest(
+    `/${spreadsheetId}/values/RINGKASAN_KEUANGAN!A2?valueInputOption=USER_ENTERED`,
+    'PUT',
+    token,
+    { values: rows }
+  );
 }
 
 /**
  * Menyimpan seluruh data sistem dari semua fitur
  * (AKUN, STOCK_SKU, INVENTORY, PENJUALAN, TRANSAKSI, HPP_PRODUK, HARGA_MARKETPLACE, RINGKASAN_KEUANGAN + customSheets)
- * secara lengkap & otomatis ke Google Sheets
+ * secara lengkap, cepat, & atomik ke Google Sheets menggunakan batchClear + batchUpdate
  */
 export async function pushAllDataToSheets(
   spreadsheetId: string,
@@ -1125,45 +1263,211 @@ export async function pushAllDataToSheets(
   // 1. Pastikan seluruh sheet fitur sudah ada di Google Spreadsheet (jika ada fitur baru, otomatis addSheet & tulis header terbaru)
   const addedSheets = await ensureSheetsExist(spreadsheetId, token, payload.customSheets);
 
-  // 2. Push seluruh data ke masing-masing sheet fitur
-  await pushAccountsToSheets(spreadsheetId, payload.accounts, token);
+  // 2. Siapkan baris data untuk masing-masing sheet
+  const akunRows = payload.accounts.map(acc => [
+    acc.code,
+    acc.name,
+    acc.type,
+    acc.normalBalance,
+    acc.initialBalance,
+    acc.description || ''
+  ]);
 
-  if (payload.inventory) {
-    await pushStockSkuToSheets(spreadsheetId, payload.inventory, token);
-    await pushInventoryToSheets(spreadsheetId, payload.inventory, token);
-  }
+  const invList = payload.inventory || [];
+  const stockSkuRows = invList.map(item => {
+    const rem = Math.max(0, item.totalQty - item.usedOrSoldQty);
+    const status = resolveItemAvailability(item);
+    const countedStock = status === 'not_for_sale' ? 0 : rem;
+    const uncountedStock = status === 'not_for_sale' ? rem : 0;
+    return [
+      item.id,
+      item.sku,
+      item.name,
+      item.productSleeve || (item.category === 'for_sale' ? 'Lengan Pendek' : '-'),
+      item.designStyle || (item.category === 'for_sale' ? 'Oversize' : '-'),
+      item.designGraphic || '-',
+      item.productColor || '-',
+      item.designNumber || '01',
+      item.subCategory || 'Kaos / T-Shirt',
+      item.unit || 'pcs',
+      item.totalQty,
+      item.usedOrSoldQty,
+      countedStock,
+      uncountedStock,
+      formatAvailabilityLabel(status),
+      serializeVariantsForSheet(item.variants),
+      item.location || '',
+      item.notes || '',
+      item.updatedAt || ''
+    ];
+  });
 
-  if (payload.sales) {
-    await pushSalesToSheets(spreadsheetId, payload.sales, token);
-  }
+  const inventoryRows = invList.map(item => {
+    const rem = Math.max(0, item.totalQty - item.usedOrSoldQty);
+    const totalVal = rem * (item.unitCost || 0);
+    const status = resolveItemAvailability(item);
+    return [
+      item.id,
+      item.sku,
+      item.name,
+      item.category === 'for_sale'
+        ? 'Barang untuk Dijual (Persediaan)'
+        : 'Barang untuk Dipakai (Operasional / Tidak Dijual)',
+      item.subCategory || '',
+      item.unit || 'pcs',
+      item.totalQty,
+      item.usedOrSoldQty,
+      rem,
+      formatAvailabilityLabel(status),
+      item.unitCost || 0,
+      item.sellingPrice || 0,
+      totalVal,
+      item.accountCode || (item.category === 'for_sale' ? '1-1005' : '1-1006'),
+      item.location || '',
+      item.notes || '',
+      item.updatedAt || ''
+    ];
+  });
 
-  await pushTransactionsToSheets(spreadsheetId, payload.transactions, token);
+  const salesRows = (payload.sales || []).map(s => [
+    s.id,
+    s.orderDate,
+    s.settledDate || '-',
+    s.invoiceNum,
+    s.channel,
+    s.customerName,
+    s.productName,
+    s.qty,
+    s.unitPrice,
+    s.discountAmount || 0,
+    s.grossTransacted,
+    s.marketplaceFee || 0,
+    s.netPayout,
+    s.hppPerPiece || 0,
+    s.totalHpp || 0,
+    s.estimatedNetProfit,
+    s.status === 'settled' ? 'SUDAH CAIR (SETTLED)' : 'PENDING (TERTAHAN)',
+    s.targetAccountCode || '1-1003',
+    s.revenueAccountCode || '4-1001',
+    s.feeAccountCode || '5-1008',
+    s.notes || '',
+    s.createdAt || ''
+  ]);
 
-  if (payload.hppCalcs) {
-    await pushHPPToSheets(spreadsheetId, payload.hppCalcs, token);
-  }
+  const txRows = payload.transactions.map(trx => [
+    trx.id,
+    trx.date,
+    trx.refNum,
+    trx.description,
+    trx.debitAccount,
+    trx.creditAccount,
+    trx.amount,
+    trx.createdAt
+  ]);
 
-  if (payload.marketplaceHistory) {
-    await pushMarketplaceHistoryToSheets(spreadsheetId, payload.marketplaceHistory, token);
-  }
+  const hppRows = (payload.hppCalcs || []).map(c => [
+    c.id,
+    c.productName,
+    c.qty,
+    c.rawMaterialType === 'kain' ? 'Kain Roll (CMT)' : c.rawMaterialType === 'both' ? 'Kombinasi' : 'Baju Jadi',
+    c.fabricCost,
+    c.printCost || 0,
+    c.cmtCost || 0,
+    c.accessoriesCost || 0,
+    c.packagingCost || 0,
+    c.otherCost || 0,
+    c.totalCost,
+    c.hppPerPiece,
+    `${c.targetMargin}%`,
+    c.retailPrice,
+    c.wholesalePrice || 0,
+    c.isBenchmark ? '⭐ BENCHMARK UTAMA' : 'Kalkulasi Artikel',
+    c.notes || '',
+    c.createdAt || ''
+  ]);
 
-  if (payload.summary) {
-    await pushSummaryToSheets(spreadsheetId, payload.summary, token);
-  }
+  const mpRows = (payload.marketplaceHistory || []).map(m => [
+    m.id,
+    m.productName,
+    m.hpp,
+    m.mode === 'target' ? 'Target Laba Bersih' : 'Simulasi Harga Jual',
+    m.targetProfit,
+    m.sellingPrice,
+    m.date
+  ]);
 
-  // Push dynamic custom sheets if provided
+  const summary = payload.summary;
+  const summaryRows: (string | number)[][] = summary ? [
+    ['Total Pendapatan Penjualan', formatRupiahText(summary.totalRevenue), 'Total penerimaan dari penjualan produk clothing'],
+    ['Total Harga Pokok Penjualan (HPP)', formatRupiahText(summary.totalHPP), 'Beban pokok produksi produk pakaian yang terjual'],
+    ['Laba Kotor (Gross Profit)', formatRupiahText(summary.grossProfit), 'Pendapatan dikurangi HPP produk'],
+    ['Total Beban Operasional', formatRupiahText(summary.totalExpenses), 'Beban sewa, gaji, promosi, & utilitas operasional'],
+    ['Laba Bersih Usaha (Net Profit)', formatRupiahText(summary.netProfit), summary.netProfit >= 0 ? 'Surplus laba bersih operasional' : 'Defisit operasional saat ini'],
+    ['Total Saldo Kas & Bank', formatRupiahText(summary.totalCash), 'Likuiditas dana cair di kas dan rekening perbankan'],
+    ['Total Piutang Usaha', formatRupiahText(summary.totalReceivables), 'Tagihan penjualan dan kredit pelanggan berjalan'],
+    ['Total Persediaan Barang (COA)', formatRupiahText(summary.totalInventory), 'Nilai persediaan baju jadi, kain roll, & aksesoris'],
+    ['Nilai Inventory Barang Belum Terjual (Siap Jual)', formatRupiahText(summary.totalInventoryForSaleValue || 0), 'Total nilai modal barang dagangan yang belum terjual'],
+    ['Nilai Inventory Barang Dipakai (Operasional / Tidak Dijual)', formatRupiahText(summary.totalInventoryInternalValue || 0), 'Total nilai perlengkapan & peralatan operasional'],
+    ['Status Ketersediaan Produk (Stock & SKU)', `${summary.totalStockAvailableProducts || 0} Tersedia | ${summary.totalStockUnavailableProducts || 0} Habis | ${summary.totalStockNotForSaleProducts || 0} Tidak Dijual`, 'Rekap status ketersediaan artikel pada modul Stock & Kode SKU Otomatis'],
+    ['Total Kuantitas Stock Produk', `${summary.totalStockCountedPcs || 0} Pcs Siap Jual | ${summary.totalStockUncountedPcs || 0} Pcs Stock Tidak Terhitung`, 'Pemisahan otomatis stok siap jual dan stock tidak terhitung (produk tidak dijual)'],
+    ['Penjualan Marketplace Masih Pending (Tertahan)', `${summary.totalPendingSalesCount || 0} Pesanan (${formatRupiahText(summary.totalPendingSalesNet || 0)})`, 'Dana penjualan yang masih tertahan di escrow marketplace'],
+    ['Penjualan Sudah Cair (Masuk Rekening & Jurnal)', `${summary.totalSettledSalesCount || 0} Pesanan (${formatRupiahText(summary.totalSettledSalesNet || 0)})`, 'Dana penjualan yang telah cair dan masuk ke Transaksi & Jurnal Umum'],
+    ['Total Aset / Aktiva', formatRupiahText(summary.totalAssets), 'Total seluruh kekayaan dan aset bisnis'],
+    ['Total Kewajiban / Hutang', formatRupiahText(summary.totalLiabilities), 'Kewajiban hutang usaha jangka pendek dan panjang'],
+    ['Total Ekuitas / Modal', formatRupiahText(summary.totalEquity), 'Total modal disetor dan saldo laba yang ditahan'],
+    ['Status Keseimbangan Neraca Saldo', summary.isTrialBalanced ? 'SEIMBANG (BALANCED)' : `SELISIH ${formatRupiahText(summary.trialBalanceDiff)}`, summary.isTrialBalanced ? 'Posisi total debit dan kredit klop sempurna' : 'Terdapat selisih nominal debit dan kredit'],
+    ['Terakhir Disinkronkan', summary.lastUpdated, 'Timestamp sinkronisasi real-time otomatis dari website'],
+  ] : [];
+
+  // 3. Batch Clear semua baris data lama sekaligus dalam 1 panggilan API
+  const rangesToClear = [
+    'AKUN!A2:Z1000',
+    'STOCK_SKU!A2:Z5000',
+    'INVENTORY!A2:Z5000',
+    'PENJUALAN!A2:Z5000',
+    'TRANSAKSI!A2:Z10000',
+    'HPP_PRODUK!A2:Z2000',
+    'HARGA_MARKETPLACE!A2:Z1000',
+    'RINGKASAN_KEUANGAN!A2:Z100',
+    ...(payload.customSheets || []).map(cs => `${cs.title}!A2:Z5000`)
+  ];
+
+  await makeRequest(
+    `/${spreadsheetId}/values:batchClear`,
+    'POST',
+    token,
+    { ranges: rangesToClear }
+  );
+
+  // 4. Batch Update semua sheet yang memiliki baris data sekaligus dalam 1 panggilan API
+  const batchUpdateData: { range: string; values: (string | number)[][] }[] = [];
+  if (akunRows.length > 0) batchUpdateData.push({ range: 'AKUN!A2', values: akunRows });
+  if (stockSkuRows.length > 0) batchUpdateData.push({ range: 'STOCK_SKU!A2', values: stockSkuRows });
+  if (inventoryRows.length > 0) batchUpdateData.push({ range: 'INVENTORY!A2', values: inventoryRows });
+  if (salesRows.length > 0) batchUpdateData.push({ range: 'PENJUALAN!A2', values: salesRows });
+  if (txRows.length > 0) batchUpdateData.push({ range: 'TRANSAKSI!A2', values: txRows });
+  if (hppRows.length > 0) batchUpdateData.push({ range: 'HPP_PRODUK!A2', values: hppRows });
+  if (mpRows.length > 0) batchUpdateData.push({ range: 'HARGA_MARKETPLACE!A2', values: mpRows });
+  if (summaryRows.length > 0) batchUpdateData.push({ range: 'RINGKASAN_KEUANGAN!A2', values: summaryRows });
+
   if (payload.customSheets && payload.customSheets.length > 0) {
     for (const cs of payload.customSheets) {
-      await makeRequest(`/${spreadsheetId}/values/${cs.title}!A2:Z5000:clear`, 'POST', token);
       if (cs.rows.length > 0) {
-        await makeRequest(
-          `/${spreadsheetId}/values/${cs.title}!A2?valueInputOption=USER_ENTERED`,
-          'PUT',
-          token,
-          { values: cs.rows }
-        );
+        batchUpdateData.push({ range: `${cs.title}!A2`, values: cs.rows });
       }
     }
+  }
+
+  if (batchUpdateData.length > 0) {
+    await makeRequest(
+      `/${spreadsheetId}/values:batchUpdate`,
+      'POST',
+      token,
+      {
+        valueInputOption: 'USER_ENTERED',
+        data: batchUpdateData
+      }
+    );
   }
 
   return { addedSheets };

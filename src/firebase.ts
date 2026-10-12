@@ -23,15 +23,29 @@ provider.addScope('https://www.googleapis.com/auth/spreadsheets');
 
 // Cache the access token in memory and local storage
 const TOKEN_KEY = 'threemister_oauth_token';
+const CLOUD_EMAIL_KEY = 'threemister_cloud_user_email';
 const DEMO_MODE_KEY = 'threemister_is_demo_mode';
 const AUTH_CHANNEL_NAME = 'threemister_auth_channel';
 
 let cachedAccessToken: string | null = null;
 let isSigningIn = false;
 
+export const saveManualCloudToken = (token: string, email = 'ersgroup2002@gmail.com') => {
+  cachedAccessToken = token;
+  if (typeof window !== 'undefined') {
+    try {
+      localStorage.setItem(TOKEN_KEY, token);
+      localStorage.setItem(CLOUD_EMAIL_KEY, email);
+      localStorage.removeItem(DEMO_MODE_KEY);
+    } catch {
+      // Ignore storage errors
+    }
+  }
+};
+
 // Initialize auth state listener
 export const initAuth = (
-  onAuthSuccess?: (user: User, token: string) => void,
+  onAuthSuccess?: (user: any, token: string) => void,
   onAuthFailure?: () => void
 ) => {
   // Listen for cross-tab auth broadcasts (e.g. user signs in via a new tab)
@@ -41,8 +55,13 @@ export const initAuth = (
       channel.onmessage = (event) => {
         if (event.data?.type === 'AUTH_SUCCESS' && event.data?.token) {
           cachedAccessToken = event.data.token;
-          if (auth.currentUser && onAuthSuccess) {
-            onAuthSuccess(auth.currentUser, event.data.token);
+          const fallbackUser = auth.currentUser || {
+            email: event.data.email || 'ersgroup2002@gmail.com',
+            displayName: 'THREE MISTER Cloud',
+            uid: 'threemister-cloud-sync'
+          };
+          if (onAuthSuccess) {
+            onAuthSuccess(fallbackUser, event.data.token);
           }
         }
       };
@@ -52,22 +71,29 @@ export const initAuth = (
   }
 
   return onAuthStateChanged(auth, async (user: User | null) => {
-    if (user) {
-      if (!cachedAccessToken && typeof window !== 'undefined') {
-        try {
-          cachedAccessToken = localStorage.getItem(TOKEN_KEY);
-        } catch {
-          cachedAccessToken = null;
-        }
+    if (!cachedAccessToken && typeof window !== 'undefined') {
+      try {
+        cachedAccessToken = localStorage.getItem(TOKEN_KEY);
+      } catch {
+        cachedAccessToken = null;
       }
+    }
 
-      if (cachedAccessToken) {
-        if (onAuthSuccess) onAuthSuccess(user, cachedAccessToken);
-      } else if (!isSigningIn) {
-        if (onAuthFailure) onAuthFailure();
-      }
-    } else {
-      cachedAccessToken = null;
+    if (user && cachedAccessToken && cachedAccessToken !== 'offline-demo-token') {
+      if (onAuthSuccess) onAuthSuccess(user, cachedAccessToken);
+    } else if (cachedAccessToken && cachedAccessToken !== 'offline-demo-token') {
+      // Support cross-domain Cloud Sync token on GitHub Pages where Firebase popup wasn't used
+      let savedEmail = 'ersgroup2002@gmail.com';
+      try {
+        savedEmail = localStorage.getItem(CLOUD_EMAIL_KEY) || 'ersgroup2002@gmail.com';
+      } catch {}
+      const cloudUser = {
+        email: savedEmail,
+        displayName: 'THREE MISTER Cloud Sync',
+        uid: 'threemister-cloud-sync'
+      };
+      if (onAuthSuccess) onAuthSuccess(cloudUser, cachedAccessToken);
+    } else if (!isSigningIn) {
       if (onAuthFailure) onAuthFailure();
     }
   });
