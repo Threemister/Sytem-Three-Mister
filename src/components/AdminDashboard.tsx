@@ -3,8 +3,8 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-import { useState, useMemo } from 'react';
-import { Account, Transaction, FinanceNotification } from '../types';
+import { useState, useMemo, useEffect } from 'react';
+import { Account, Transaction, FinanceNotification, SavedCalculation } from '../types';
 import { 
   Database, 
   ArrowUpRight, 
@@ -53,7 +53,10 @@ import {
   EyeOff,
   ExternalLink,
   Globe,
-  Copy
+  Copy,
+  Star,
+  Bookmark,
+  Calculator
 } from 'lucide-react';
 import {
   ResponsiveContainer,
@@ -546,59 +549,131 @@ export default function AdminDashboard({
     };
   }, [transactions, accounts, cashAccounts, totalRevenue, totalHPP, netProfit, totalCash]);
 
-  // Product monitoring list for Widget: Monitoring HPP
-  const productsMonitoring = [
-    {
-      id: 'TM-01',
-      name: 'Kaos Polos Heavy Cotton 24s',
-      sku: 'TM-TSHIRT-01',
-      hpp: 42000,
-      sellingPrice: 120000,
-      margin: 65,
-      status: 'Aman',
-      color: 'bg-emerald-500'
-    },
-    {
-      id: 'TM-02',
-      name: 'Kemeja Casual Oxford Three Mister',
-      sku: 'TM-SHIRT-02',
-      hpp: 65000,
-      sellingPrice: 175000,
-      margin: 63,
-      status: 'Aman',
-      color: 'bg-emerald-500'
-    },
-    {
-      id: 'TM-03',
-      name: 'Hoodie Fleece Heavyweight 330gsm',
-      sku: 'TM-HOOD-03',
-      hpp: 98000,
-      sellingPrice: 250000,
-      margin: 61,
-      status: 'Aman',
-      color: 'bg-emerald-500'
-    },
-    {
-      id: 'TM-04',
-      name: 'Celana Slimfit Chino Stretch',
-      sku: 'TM-CHINO-04',
-      hpp: 85000,
-      sellingPrice: 185000,
-      margin: 54,
-      status: 'Sedang',
-      color: 'bg-amber-500'
-    },
-    {
-      id: 'TM-05',
-      name: 'Jaket Coach Windbreaker Three Mister',
-      sku: 'TM-JACKET-05',
-      hpp: 110000,
-      sellingPrice: 220000,
-      margin: 50,
-      status: 'Sedang',
-      color: 'bg-amber-500'
+  // Synchronized HPP calculations loaded from Riwayat & Patokan HPP
+  const [syncedHppList, setSyncedHppList] = useState<SavedCalculation[]>(() => {
+    try {
+      const saved = localStorage.getItem('threemister_hpp_calcs');
+      if (saved) {
+        const parsed = JSON.parse(saved);
+        if (Array.isArray(parsed) && parsed.length > 0) return parsed;
+      }
+    } catch {}
+    return [];
+  });
+
+  // Listen to hpp_updated event or storage changes
+  useEffect(() => {
+    const handleHppUpdate = () => {
+      try {
+        const saved = localStorage.getItem('threemister_hpp_calcs');
+        if (saved) {
+          const parsed = JSON.parse(saved);
+          if (Array.isArray(parsed)) {
+            setSyncedHppList(parsed);
+          }
+        }
+      } catch {}
+    };
+
+    window.addEventListener('hpp_updated', handleHppUpdate);
+    window.addEventListener('storage', handleHppUpdate);
+    return () => {
+      window.removeEventListener('hpp_updated', handleHppUpdate);
+      window.removeEventListener('storage', handleHppUpdate);
+    };
+  }, []);
+
+  // Filter mode for Monitoring HPP: 'all' | 'benchmark'
+  const [hppFilterMode, setHppFilterMode] = useState<'all' | 'benchmark'>('all');
+
+  // Product monitoring list synchronized with Riwayat & Patokan HPP
+  const productsMonitoring = useMemo(() => {
+    if (syncedHppList.length > 0) {
+      let filtered = syncedHppList;
+      if (hppFilterMode === 'benchmark') {
+        const benches = syncedHppList.filter(item => item.isBenchmark);
+        if (benches.length > 0) {
+          filtered = benches;
+        }
+      }
+      return filtered.map((item, idx) => {
+        const hpp = item.hppPerPiece || 0;
+        const sellingPrice = item.retailPrice || (hpp > 0 ? Math.round(hpp / (1 - (item.targetMargin || 60) / 100)) : 0);
+        const margin = item.targetMargin || (sellingPrice > 0 ? Math.round(((sellingPrice - hpp) / sellingPrice) * 100) : 0);
+        const status = margin >= 60 ? 'Aman' : margin >= 40 ? 'Sedang' : 'Kritis';
+        const color = margin >= 60 ? 'bg-emerald-500' : margin >= 40 ? 'bg-amber-500' : 'bg-rose-500';
+
+        // Format short clean SKU or code
+        const skuPrefix = item.rawMaterialType === 'baju_jadi' ? 'TM-BJ' : item.rawMaterialType === 'kain' ? 'TM-FAB' : 'TM-ART';
+        const sku = `HPP-${item.id.replace('BENCHMARK-', 'BM-').replace('CALC-', '').slice(0, 10)}`;
+
+        return {
+          id: item.id || `HPP-${idx}`,
+          name: item.productName || 'Artikel Tanpa Nama',
+          sku,
+          hpp,
+          sellingPrice,
+          margin,
+          status,
+          color,
+          isBenchmark: Boolean(item.isBenchmark),
+          qty: item.qty,
+          wholesalePrice: item.wholesalePrice,
+          rawMaterialType: item.rawMaterialType,
+          createdAt: item.createdAt
+        };
+      });
     }
-  ];
+
+    // Fallback baseline standard Three Mister
+    return [
+      {
+        id: 'BENCHMARK-KAOS-24S',
+        name: 'Kaos Polos Cotton Combed 24s (Sablon Plastisol)',
+        sku: 'BM-KAOS-24S',
+        hpp: 56900,
+        sellingPrice: 142250,
+        margin: 60,
+        status: 'Aman',
+        color: 'bg-emerald-500',
+        isBenchmark: true,
+        qty: 100,
+        wholesalePrice: 81286,
+        rawMaterialType: 'baju_jadi',
+        createdAt: 'Standar Industri'
+      },
+      {
+        id: 'BENCHMARK-HOODIE-FLEECE',
+        name: 'Hoodie Pullover Heavy Fleece 330gsm (Bordir Dada)',
+        sku: 'BM-HOOD-330',
+        hpp: 145000,
+        sellingPrice: 362500,
+        margin: 60,
+        status: 'Aman',
+        color: 'bg-emerald-500',
+        isBenchmark: true,
+        qty: 50,
+        wholesalePrice: 207143,
+        rawMaterialType: 'baju_jadi',
+        createdAt: 'Standar Industri'
+      },
+      {
+        id: 'BENCHMARK-KEMEJA-OXFORD',
+        name: 'Kemeja Casual Oxford Long-Sleeve (Kain Roll CMT)',
+        sku: 'BM-SHIRT-OXF',
+        hpp: 113000,
+        sellingPrice: 251111,
+        margin: 55,
+        status: 'Sedang',
+        color: 'bg-amber-500',
+        isBenchmark: true,
+        qty: 60,
+        wholesalePrice: 161429,
+        rawMaterialType: 'kain',
+        createdAt: 'Standar Industri'
+      }
+    ];
+  }, [syncedHppList, hppFilterMode]);
 
   // Recent transactions (Limit 5)
   const recentTxs = useMemo(() => {
@@ -1477,16 +1552,24 @@ export default function AdminDashboard({
           <div className="bg-white rounded-xl border border-slate-200/90 shadow-xs p-5 space-y-4 hover:border-slate-300 transition flex flex-col justify-between">
             <div>
               {/* Header */}
-              <div className="flex items-center justify-between border-b border-slate-100 pb-3">
+              <div className="flex flex-col sm:flex-row sm:items-center justify-between border-b border-slate-100 pb-3 gap-2">
                 <div>
-                  <h3 className="font-bold text-slate-900 text-xs uppercase tracking-wider flex items-center gap-1.5">
-                    <Tag className="w-4 h-4 text-[#580001]" />
-                    Monitoring HPP & Margin Produk
-                  </h3>
-                  <span className="text-[10px] text-slate-400 font-medium">Evaluasi Profitabilitas Koleksi THREE MISTER</span>
+                  <div className="flex items-center gap-2">
+                    <h3 className="font-bold text-slate-900 text-xs uppercase tracking-wider flex items-center gap-1.5">
+                      <Calculator className="w-4 h-4 text-[#580001]" />
+                      Monitoring HPP & Margin Produk
+                    </h3>
+                    <span className="inline-flex items-center gap-1 bg-emerald-50 text-emerald-800 text-[10px] font-bold px-2 py-0.5 rounded-full border border-emerald-200">
+                      <span className="w-1.5 h-1.5 rounded-full bg-emerald-500 animate-pulse" />
+                      Sinkron Riwayat & Patokan ({productsMonitoring.length})
+                    </span>
+                  </div>
+                  <span className="text-[10px] text-slate-400 font-medium">
+                    Otomatis mengambil data terkini dari modul Riwayat & Patokan HPP
+                  </span>
                 </div>
                 {onNavigateToScreen && (
-                  <div className="flex items-center gap-1.5">
+                  <div className="flex items-center gap-1.5 shrink-0">
                     <button
                       onClick={() => onNavigateToScreen('marketplace')}
                       className="text-[11px] bg-slate-100 hover:bg-slate-200 text-slate-700 font-bold px-2.5 py-1 rounded-lg transition cursor-pointer inline-flex items-center gap-1"
@@ -1505,45 +1588,102 @@ export default function AdminDashboard({
                 )}
               </div>
 
-              {/* Products List with Accurate style progress bars */}
-              <div className="space-y-3 pt-2">
-                {productsMonitoring.map((prod) => (
-                  <div key={prod.id} className="p-2.5 rounded-lg bg-slate-50/70 border border-slate-200/70 space-y-1.5">
-                    <div className="flex items-center justify-between text-xs">
-                      <div>
-                        <span className="font-bold text-slate-800">{prod.name}</span>
-                        <span className="text-[10px] text-slate-400 font-mono ml-2">{prod.sku}</span>
-                      </div>
-                      <span className={`text-[10px] font-bold px-2 py-0.5 rounded-full ${
-                        prod.margin >= 60 
-                          ? 'bg-emerald-50 text-emerald-700 border border-emerald-100' 
-                          : 'bg-amber-50 text-amber-700 border border-amber-100'
-                      }`}>
-                        Margin {prod.margin}%
-                      </span>
-                    </div>
+              {/* Sub-Filter Tabs: Semua vs Khusus Patokan Acuan */}
+              <div className="flex items-center justify-between pt-2 pb-1 text-xs">
+                <div className="flex items-center gap-1 bg-slate-100 p-0.5 rounded-lg border border-slate-200/70">
+                  <button
+                    type="button"
+                    onClick={() => setHppFilterMode('all')}
+                    className={`px-2.5 py-1 rounded-md text-[11px] font-bold transition cursor-pointer ${
+                      hppFilterMode === 'all'
+                        ? 'bg-white text-[#580001] shadow-xs'
+                        : 'text-slate-600 hover:text-slate-900'
+                    }`}
+                  >
+                    Semua Riwayat ({syncedHppList.length || productsMonitoring.length})
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setHppFilterMode('benchmark')}
+                    className={`px-2.5 py-1 rounded-md text-[11px] font-bold transition flex items-center gap-1 cursor-pointer ${
+                      hppFilterMode === 'benchmark'
+                        ? 'bg-white text-amber-700 shadow-xs'
+                        : 'text-slate-600 hover:text-slate-900'
+                    }`}
+                  >
+                    <Star className="w-3 h-3 fill-amber-400 text-amber-500" />
+                    Patokan Acuan ({syncedHppList.filter(s => s.isBenchmark).length || 3})
+                  </button>
+                </div>
+                <span className="text-[10px] text-slate-400 font-medium hidden sm:inline">
+                  {hppFilterMode === 'benchmark' ? 'Menampilkan artikel patokan standar' : 'Menampilkan seluruh artikel tersimpan'}
+                </span>
+              </div>
 
-                    {/* Progress Bar showing HPP vs Selling Price */}
-                    <div className="space-y-1">
-                      <div className="w-full bg-slate-200 h-2 rounded-full overflow-hidden">
-                        <div
-                          className={`h-full ${prod.color} rounded-full`}
-                          style={{ width: `${prod.margin}%` }}
-                        ></div>
+              {/* Products List with Accurate style progress bars */}
+              <div className="space-y-3 pt-2 max-h-80 overflow-y-auto pr-1">
+                {productsMonitoring.length === 0 ? (
+                  <div className="text-center py-6 border border-dashed border-slate-200 rounded-xl bg-slate-50/50">
+                    <p className="text-xs text-slate-500 font-medium">Belum ada riwayat HPP tersimpan</p>
+                    <p className="text-[10px] text-slate-400 mt-0.5">Buka Kalkulator HPP untuk membuat patokan produk pertama.</p>
+                  </div>
+                ) : (
+                  productsMonitoring.map((prod) => (
+                    <div key={prod.id} className="p-2.5 rounded-lg bg-slate-50/70 border border-slate-200/70 space-y-1.5 hover:border-slate-300 transition">
+                      <div className="flex items-center justify-between text-xs gap-2">
+                        <div className="min-w-0">
+                          <div className="flex items-center gap-1.5 flex-wrap">
+                            <span className="font-bold text-slate-800 truncate">{prod.name}</span>
+                            {prod.isBenchmark && (
+                              <span className="inline-flex items-center gap-0.5 text-[9px] font-bold bg-amber-100 text-amber-800 border border-amber-200 px-1.5 py-0.2 rounded shrink-0">
+                                <Star className="w-2.5 h-2.5 fill-amber-500 text-amber-500" />
+                                Patokan Acuan
+                              </span>
+                            )}
+                          </div>
+                          <div className="flex items-center gap-2 text-[10px] text-slate-400 font-mono mt-0.5">
+                            <span>{prod.sku}</span>
+                            {prod.qty && <span>• Batch {prod.qty} pcs</span>}
+                            {prod.createdAt && <span className="hidden sm:inline">• {prod.createdAt}</span>}
+                          </div>
+                        </div>
+                        <span className={`text-[10px] font-bold px-2 py-0.5 rounded-full shrink-0 ${
+                          prod.margin >= 60 
+                            ? 'bg-emerald-50 text-emerald-700 border border-emerald-100' 
+                            : prod.margin >= 40
+                            ? 'bg-amber-50 text-amber-700 border border-amber-100'
+                            : 'bg-rose-50 text-rose-700 border border-rose-100'
+                        }`}>
+                          Margin {prod.margin}% ({prod.status})
+                        </span>
                       </div>
-                      <div className="flex items-center justify-between text-[10px] text-slate-500 font-mono">
-                        <span>HPP: <strong>{formatIDR(prod.hpp)}</strong></span>
-                        <span>Jual: <strong className="text-slate-800">{formatIDR(prod.sellingPrice)}</strong></span>
-                        <span>Laba: <strong className="text-emerald-600">+{formatIDR(prod.sellingPrice - prod.hpp)}</strong></span>
+
+                      {/* Progress Bar showing HPP vs Selling Price */}
+                      <div className="space-y-1">
+                        <div className="w-full bg-slate-200 h-2 rounded-full overflow-hidden">
+                          <div
+                            className={`h-full ${prod.color} rounded-full`}
+                            style={{ width: `${Math.min(100, Math.max(5, prod.margin))}%` }}
+                          ></div>
+                        </div>
+                        <div className="flex items-center justify-between text-[10px] text-slate-500 font-mono flex-wrap gap-1">
+                          <span>HPP: <strong>{formatIDR(prod.hpp)}</strong>/pcs</span>
+                          <span>Jual Eceran: <strong className="text-slate-800">{formatIDR(prod.sellingPrice)}</strong></span>
+                          <span>Laba: <strong className="text-emerald-600">+{formatIDR(prod.sellingPrice - prod.hpp)}</strong></span>
+                          {prod.wholesalePrice && prod.wholesalePrice > 0 ? (
+                            <span className="text-slate-400 hidden sm:inline">Grosir: {formatIDR(prod.wholesalePrice)}</span>
+                          ) : null}
+                        </div>
                       </div>
                     </div>
-                  </div>
-                ))}
+                  ))
+                )}
               </div>
             </div>
 
-            <div className="pt-2 border-t border-slate-100 text-[10px] text-slate-400 text-right">
-              💡 Rekomendasi: Target margin 60% - 75% untuk menutup operasional & pemasaran.
+            <div className="pt-2 border-t border-slate-100 flex items-center justify-between text-[10px] text-slate-400">
+              <span>Data otomatis tersinkronisasi dengan Riwayat & Patokan HPP.</span>
+              <span className="font-semibold text-slate-600">Target Ideal: Margin 60% - 75%</span>
             </div>
           </div>
         )}
